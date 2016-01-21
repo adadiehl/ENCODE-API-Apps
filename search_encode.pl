@@ -140,16 +140,23 @@ available at: https://www.encodeproject.org/help/rest-api/
 
 EXAMPLES
 
-* Find all experiments that used protocols described in the same document and
-print results as a data table:
+* Find all experiments that used the GAIIx protocol from Michael Snyder's
+lab and print results as a data table:
 
-search_encode.pl \"*\" \"experiment\" \"&documents.attachment.download=filename.pdf\" --data-table
+search_encode.pl \"*\" \"&documents.attachment.download=ChIP-Seq_protocol_Snyder_lab_GAIIx.pdf\"
 
+* Same as above, but only for experiments performed on GM12878 cells:
+
+search_encode.pl \"GM12878\" \"&documents.attachment.download=ChIP-Seq_protocol_Snyder_lab_GAIIx.pdf\"
+
+* Same as previous, but download all peak annotations in bigBed format:
+
+search_encode.pl \"GM12878\" \"&documents.attachment.download=ChIP-Seq_protocol_Snyder_lab_GAIIx.pdf\" --download --output-type \"peaks\" --file-format \"bigBed\"
 
 
 CREDITS AND LICENSE:
 
-Copyright (C) 2015, Adam Diehl
+Copyright (C) 2016, Adam Diehl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -169,10 +176,6 @@ adadiehl\@umich.edu
 
 \n";
 
-if ($#ARGV + 1 < 2) {
-    die "$usage\n";
-}
-
 my $search_str = $ARGV[0];
 my $params = $ARGV[1];
 
@@ -184,6 +187,7 @@ my $file_format_type_str;
 my $download_path = "";
 my $out_root = "";
 my $save_json = 0;
+my $rec_type = "experiment";
 
 GetOptions (
     "help" => \$help,
@@ -193,11 +197,12 @@ GetOptions (
     "file-format-type=s" => \$file_format_type_str,
     "download-path=s" => \$download_path,
     "out-root=s" => \$out_root,
-    "save-json" => \$save_json
+    "save-json" => \$save_json,
+    "rec-type=s" => \$rec_type
     );
 
-# Check for help option and exit with usage message if found.
-if ($help) {
+# Check for proper usage and help option and exit with usage message as needed.
+if ($help || $#ARGV+1 < 2) {
     die "$usage\n";
 }
 
@@ -213,6 +218,9 @@ if ($download_path ne "" && !$download) {
 }
 if ($download && !defined($output_type_str)) {
     print STDERR "\nWarning: --download will retrieve all accepted files associated with search results. If this is not what you want, use --file-type to specify which type(s) you would like to download. See --help.\n\n";
+}
+if ($rec_type ne "experiment") {
+    print STDERR "\nWarning: --rec_type other than \"experiment\" has not been well tested and may produces unpredictable results!\n";
 }
 
 # Check the download path for a trailing slash and add one if needed
@@ -259,7 +267,8 @@ my $mech = WWW::Mechanize->new(
 # Build the query URL from the command line args and parameters
 my $URL = 'http://www.encodeproject.org/search/?searchTerm=';
 $URL .= $search_str;
-$URL .= "&type=experiment";
+$URL .= "&type=";
+$URL .= $rec_type;
 $URL .= $params;
 
 # &limit=all: Return all results, not just the first 25
@@ -371,6 +380,9 @@ foreach my $row (@{${$json}{'@graph'}}) {
 #######################
 # Stage 3: Download the data and metadata. Optionally save the file json.
 
+# Number of files/records
+my $n_results = $#metadata+1;
+
 # Set up the metadata file handle
 my $DATA;
 my $outfile = $download_path . $out_root . '.metadata';
@@ -399,6 +411,9 @@ if ($download) {
 &print_array(\@header, "\t", $DATA);
 
 # Download the files
+if ($download) {
+    print STDERR "Downloading $n_results files from ${$json}{total} records...\n";
+}
 foreach my $file_json (@downloads) {
     &download_file($mech, $file_json, $download_path, $out_root);
     if ($save_json) {
@@ -407,6 +422,7 @@ foreach my $file_json (@downloads) {
 }
 
 # Print the metadata
+print STDERR "Writing $n_results rows of metadata to \"$outfile\"...\n";
 foreach my $row (@metadata) {
     # Check for any undefined values
     for (my $i = 0; $i <= $#{$row}; $i++) {
@@ -418,6 +434,8 @@ foreach my $row (@metadata) {
 }
 
 close $DATA;
+
+print STDERR "Done!\n";
 
 ######################
 # Subroutines
@@ -437,8 +455,8 @@ sub save_json {
     my $download_path = $_[1];
     my $out_root = $_[2];
 
-    my $outfile = $download_path . $out_root
-	. '.' . ${$json}{accession} . '.json';
+    my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.json';
+    $outfile =~ s/^\.//;
     open my $OUT, '>', $outfile;
     print $OUT to_json($json, {pretty=>1});
     close $OUT;
@@ -464,9 +482,9 @@ sub download_file {
     } else {
 	# Checksums match. Save file to the specified
 	# path and file name.
-	my $outfile = $download_path . $out_root
-	    . '.' . ${$json}{accession} . '.' .
-	    ${$json}{file_format};
+	my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.'
+	    . ${$json}{file_format};
+	$outfile =~ s/^\.//;
 	print STDERR "\tSaving file to $outfile...\n";
 	$mech->save_content($outfile);
     }    
