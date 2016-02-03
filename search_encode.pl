@@ -174,6 +174,12 @@ Copyright (C) 2016, Adam Diehl
 Any questions/comments regarding this program may be directed to Adam Diehl:
 adadiehl\@umich.edu
 
+Originally published in \"Deciphering ENCODE\". If you use this tool in your
+research, please cite:
+
+Diehl AD and Boyle AP (2016) Deciphering ENCODE.
+Trends in Genetics. (rest of reference here...)             
+
 \n";
 
 my $search_str = $ARGV[0];
