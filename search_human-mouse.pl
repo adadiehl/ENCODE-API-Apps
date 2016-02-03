@@ -152,6 +152,15 @@ data for multiple cell types or transcription factors, for example.
 available at: https://www.encodeproject.org/help/rest-api/
 
 
+EXAMPLE:
+
+Find all transcription-factor ChIP-seq datasets for factors with data in both
+human K562 and mouse MEL cells, and download the bigBed peak annotation files
+for all of them.
+
+/search_human-mouse.pl K562 MEL \"&assay_term_name=ChIP-seq&target.investigated_as=transcription factor\" --out-root chipseq --download --output-type peaks --file-format bigBed
+
+
 CREDITS AND LICENSE:
 
 Copyright (C) 2015, Adam Diehl
@@ -171,6 +180,12 @@ Copyright (C) 2015, Adam Diehl
 
 Any questions/comments regarding this program may be directed to Adam Diehl:
 adadiehl\@umich.edu
+
+Originally published in \"Deciphering ENCODE\". If you use this tool in your 
+research, please cite:
+
+Diehl AD and Boyle AP (2016) Deciphering ENCODE.
+Trends in Genetics. (rest of reference here...)
 
 \n";
 
