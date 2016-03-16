@@ -24,6 +24,7 @@ use WWW::Mechanize;
 use Getopt::Long;
 use Encode qw(encode_utf8 decode_utf8);
 use Digest::MD5 qw(md5_hex);
+use URI::Escape;
 
 my $usage =
 "\nsearch_encode.pl
@@ -107,6 +108,13 @@ OPTIONS:
     Return only the number of results for the search. Do not retrieve
     any metadata or files. Suppresses --download (and related options) and
     --save-json.
+
+--by-biosample
+    Convert the search term to a biosample term name, for which search
+    results will be returned. The search term is not directly queried with
+    this option, but rather converted into a search parameter. This can be
+    useful when a search for a specific cell line is yielding either no
+    results or imprecise results.
 
 --help
     Display this message
@@ -205,6 +213,7 @@ my $save_json = 0;
 my $rec_type = "experiment";
 my $no_header = 0;
 my $count_only = 0;
+my $by_biosample = 0;
 
 GetOptions (
     "help" => \$help,
@@ -217,7 +226,8 @@ GetOptions (
     "save-json" => \$save_json,
     "rec-type=s" => \$rec_type,
     "no-header" => \$no_header,
-    "count-only" => \$count_only
+    "count-only" => \$count_only,
+    "by-biosample" => \$by_biosample
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -286,12 +296,35 @@ my $mech = WWW::Mechanize->new(
 # Stage 1: Build the query URL and run the primary query against the ENCODE
 # Portal.
 
+my $URL;
+
+# Handle biosample-based queries with a preliminary query to get the
+# biosample term name based on the search term.
+my $biosample;
+if ($by_biosample) {
+    print STDERR "\nSearching ENCODE for a biosample matching $search_str...\n";
+    $biosample = &get_biosample($mech, $search_str);
+    if (!defined($biosample)) {
+	die "Cannot find a biosample matching $search_str!\n";
+    }
+    $search_str = "*";
+    $biosample = uri_escape($biosample);
+} else {
+    # Escape special characters in the search string
+    $search_str = uri_escape($search_str);
+}
+
 # Build the query URL from the command line args and parameters
-my $URL = 'http://www.encodeproject.org/search/?searchTerm=';
+$URL = 'http://www.encodeproject.org/search/?searchTerm=';
 $URL .= $search_str;
 $URL .= "&type=";
 $URL .= $rec_type;
 $URL .= $params;
+
+if (defined($biosample)) {
+    $URL .= "&biosample_term_name=";
+    $URL .= $biosample;
+}
 
 # &limit=all: Return all results, not just the first 25
 # &frame=object: Return all non-null fields within the JSON data for results
@@ -574,4 +607,61 @@ sub nopath {
     $str =~ s/\/$//;
     $str =~ s/\/\S+\///;
     return $str;
+}
+
+sub get_biosample {
+    my ($mech, $search_str) = @_;
+
+    $search_str = uri_escape($search_str);
+
+    my $URL = 'http://www.encodeproject.org/search/?searchTerm=';
+    $URL .= $search_str;
+    $URL .= "&type=biosample";
+    $URL .= '&limit=all&frame=object&format=json';
+    
+#    print STDERR "$URL\n";
+
+    my $json = &get_json($mech, $URL);
+
+    if ( ${$json}{error_status} ) {
+	return undef;
+    }
+
+    my %terms_hash;
+    foreach my $row (@{${$json}{'@graph'}}) {
+	$terms_hash{${$row}{biosample_term_name}}++;
+    }
+
+    if (!%terms_hash) {
+	return undef;
+    }
+
+    my @terms;
+    foreach my $key (keys(%terms_hash)) {
+	my @tmp = ($key, $terms_hash{$key});
+	push @terms, \@tmp;
+    }
+
+    my $biosample;
+    if ($#terms > 0) {
+	print STDERR "More than one possible biosample found...\n\n";
+	for (my $i = 0; $i <= $#terms; $i++) {
+	    print STDERR $i+1, ": $terms[$i][0] ($terms[$i][1] occurences)\n";
+	}
+	print STDERR "\nEnter the number of the term you want to use [1] : ";
+	my $idx = <STDIN>;
+	if ($idx eq '') {
+	    $idx = 1;
+	}
+	chomp $idx;
+	$idx--;
+
+	$biosample = $terms[$idx][0];
+
+    } else {
+	$biosample = $terms[0][0];
+    }
+    
+    print STDERR "Using \"$biosample\" as biosample term name.\n\n";
+    return $biosample;
 }
