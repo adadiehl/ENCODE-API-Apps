@@ -44,8 +44,9 @@ search_encode.pl <search term> <params string> [OPTIONS]
 <params string>
     Comma-delimited sting of key:value pairs corresponding to columns in the
     given database table. See the schema at the address above. Some columns
-    have sub-keys that can be searched. See the supplemental table SX at
-    http://address_for_supplement.com/supplement.xls for a listing.
+    have sub-keys that can be searched. Some examples are available in Box 3:
+    API Resources, in \"Deciphering ENCODE\", available at
+    http://www.cell.com/trends/genetics/fulltext/S0168-9525%2816%2900017-2
     
     Possible keys of interest for experiments:
         biosample_term_name: tissue/cell used in assay
@@ -98,6 +99,14 @@ OPTIONS:
     identifying individual files and properties later on when retrieving
     multiple files, especially if further programmatic processing is
     anticipated.
+
+--no-header
+    Do not print a header line with column names to the metadata file.
+
+--count-only
+    Return only the number of results for the search. Do not retrieve
+    any metadata or files. Suppresses --download (and related options) and
+    --save-json.
 
 --help
     Display this message
@@ -194,6 +203,8 @@ my $download_path = "";
 my $out_root = "";
 my $save_json = 0;
 my $rec_type = "experiment";
+my $no_header = 0;
+my $count_only = 0;
 
 GetOptions (
     "help" => \$help,
@@ -204,7 +215,9 @@ GetOptions (
     "download-path=s" => \$download_path,
     "out-root=s" => \$out_root,
     "save-json" => \$save_json,
-    "rec-type=s" => \$rec_type
+    "rec-type=s" => \$rec_type,
+    "no-header" => \$no_header,
+    "count-only" => \$count_only
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -227,6 +240,9 @@ if ($download && !defined($output_type_str)) {
 }
 if ($rec_type ne "experiment") {
     print STDERR "\nWarning: --rec_type other than \"experiment\" has not been well tested and may produces unpredictable results!\n";
+}
+if ($count_only && $download) {
+    print STDERR "\Warning: --count-only overrides --download. No data will be retrieved! (see --help if this is not what you want)\n";
 }
 
 # Check the download path for a trailing slash and add one if needed
@@ -289,6 +305,11 @@ my $json = &get_json($mech, $URL);
 
 # Print status and result count to the terminal
 print STDERR "${$json}{notification}: ${$json}{total} results found.\n\n";
+
+if ($count_only) {
+    print "${$json}{total}\n";
+    exit 0;
+}
 
 
 #####################
@@ -414,7 +435,9 @@ if ($download) {
 	       "documents");
 }
 
-&print_array(\@header, "\t", $DATA);
+unless ($no_header) {
+    &print_array(\@header, "\t", $DATA);
+}
 
 # Download the files
 if ($download) {
