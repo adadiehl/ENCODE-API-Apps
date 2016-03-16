@@ -612,8 +612,6 @@ sub nopath {
 sub get_biosample {
     my ($mech, $search_str) = @_;
 
-    $search_str = uri_escape($search_str);
-
     my $URL = 'http://www.encodeproject.org/search/?searchTerm=';
     $URL .= $search_str;
     $URL .= "&type=biosample";
