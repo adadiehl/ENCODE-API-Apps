@@ -242,7 +242,7 @@ if ($rec_type ne "experiment") {
     print STDERR "\nWarning: --rec_type other than \"experiment\" has not been well tested and may produces unpredictable results!\n";
 }
 if ($count_only && $download) {
-    print STDERR "\Warning: --count-only overrides --download. No data will be retrieved! (see --help if this is not what you want)\n";
+    print STDERR "\nWarning: --count-only overrides --download. No data will be retrieved! (see --help if this is not what you want)\n";
 }
 
 # Check the download path for a trailing slash and add one if needed
@@ -311,6 +311,10 @@ if ($count_only) {
     exit 0;
 }
 
+# Catch requests that returned an error status from the Portal
+if ( ${$json}{error_status} ) {
+    exit 1;
+}
 
 #####################
 # Stage Two: Find the files we need within the search results.
@@ -473,8 +477,22 @@ sub get_json {
     # Retrieve JSON data from a URL and return it as a data structure.
     my $mech = $_[0];
     my $url = $_[1];
-    $mech->get($url);
-    my $json = decode_json($mech->content);
+
+    my $status = eval {
+	$mech->get($url);
+	1
+    };
+
+    my $content;
+    if (!$status) {
+	# For some reason, the portal sometimes returns an error when there
+	# are no results. In these cases, use a dummy json to notify the user.
+	$content = '{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }';
+    } else {
+	$content = $mech->content;
+    }
+
+    my $json = decode_json($content);
     return $json;
 }
 
