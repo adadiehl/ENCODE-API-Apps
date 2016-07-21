@@ -562,8 +562,14 @@ sub download_file {
     } else {
 	# Checksums match. Save file to the specified
 	# path and file name.
-	my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.'
-	    . ${$json}{file_format};
+
+        # This leaves off the .gz in names of zipped files!
+	#my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.'
+	#    . ${$json}{file_format};
+
+	my @file_parts = split /\//, ${$json}{href};
+
+        my $outfile = $download_path . $out_root . '.' . $file_parts[$#file_parts];
 	$outfile =~ s/^\.//;
 	print STDERR "\tSaving file to $outfile...\n";
 	$mech->save_content($outfile);
