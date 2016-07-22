@@ -25,6 +25,8 @@ use Getopt::Long;
 use Encode qw(encode_utf8 decode_utf8);
 use Digest::MD5 qw(md5_hex);
 use URI::Escape;
+use File::Which;
+#use Devel::Size qw(size total_size);
 
 my $usage =
 "\nsearch_encode.pl
@@ -98,6 +100,11 @@ OPTIONS:
 --check-exists
     Check to see if a file already exists before downloading and do not
     retrieve if found.
+
+--use-wget
+    Retrieve files with the system command \"wget\". This can be faster
+    for large result sets. Wget must be installed on the system for this
+    to work. Checksums will not be compared with this method.
 
 --save-json
     Save the JSON metadata for every file downloaded. This can be useful for
@@ -219,6 +226,7 @@ my $no_header = 0;
 my $count_only = 0;
 my $by_biosample = 0;
 my $check_exists = 0;
+my $use_wget = 0;
 
 GetOptions (
     "help" => \$help,
@@ -233,7 +241,8 @@ GetOptions (
     "no-header" => \$no_header,
     "count-only" => \$count_only,
     "by-biosample" => \$by_biosample,
-    "check-exists" => \$check_exists
+    "check-exists" => \$check_exists,
+    "use-wget" => \$use_wget
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -259,6 +268,12 @@ if ($rec_type ne "experiment") {
 }
 if ($count_only && $download) {
     print STDERR "\nWarning: --count-only overrides --download. No data will be retrieved! (see --help if this is not what you want)\n";
+}
+if ($use_wget) {
+    my $wg_path = which('wget');
+    if (!-e $wg_path) {
+	die "Cannot find wget on your system. Please try again without --use-wget.\n";
+    }
 }
 
 # Check the download path for a trailing slash and add one if needed
@@ -296,10 +311,8 @@ my $mech = WWW::Mechanize->new(
         verify_hostname => 0,
         # Quick and dirty hack to avoid errors about missing SSL certificates.
     },
+    stack_depth => 0,
     );
-# Set the history stack depth to 0 -- prevents memory usage from getting out of
-# hand for large queries.
-$mech->stack_depth( 0 );
 
 ####################
 # Stage 1: Build the query URL and run the primary query against the ENCODE
@@ -361,6 +374,9 @@ if ( ${$json}{error_status} ) {
 #####################
 # Stage Two: Find the files we need within the search results.
 # Individual search results are within the embedded array @graph.
+
+#my $mech_size = total_size($mech);
+#print STDERR "Size of $mech: $mech_size\n";
 
 my @downloads;  # To hold pointers to the files we will download
 my @metadata;   # To hold metadata for the files we will download
@@ -454,6 +470,9 @@ foreach my $row (@{${$json}{'@graph'}}) {
     }
 }
 
+#$mech_size = total_size($mech);
+#print STDERR "Size of $mech: $mech_size\n";
+
 #######################
 # Stage 3: Download the data and metadata. Optionally save the file json.
 
@@ -494,10 +513,12 @@ if ($download) {
     print STDERR "Downloading $n_results files from ${$json}{total} records...\n";
 }
 foreach my $file_json (@downloads) {
-    &download_file($mech, $file_json, $download_path, $out_root, $check_exists);
+    &download_file($mech, $file_json, $download_path, $out_root, $check_exists, $use_wget);
     if ($save_json) {
 	&save_json($file_json, $download_path, $out_root);
     }
+#    $mech_size = total_size($mech);
+#    print STDERR "Size of $mech: $mech_size\n";
 }
 
 # Print the metadata
@@ -563,9 +584,29 @@ sub download_file {
     my $download_path = $_[2];
     my $out_root = $_[3];
     my $check_exists = $_[4];
+    my $use_wget = $_[5];
+
+
+    my @file_parts = split /\//, ${$json}{href};
+    my $outfile = $download_path . $out_root . '.' . $file_parts[$#file_parts];
+    $outfile =~ s/^\.//;
+
+    if ($check_exists && -f $outfile) {
+        # See if file already exists and move on if found
+	print STDERR "\tFile exists: $outfile. Moving on...\n";
+	return 1;
+    }
 
     my $url = "https://www.encodeproject.org" . ${$json}{href};
     print STDERR "Found a matching record at $url. Retrieving data...\n";
+
+    if ($use_wget) {
+	print STDERR "Retrieving file with wget...\n";
+	`wget $url`;
+	`mv $file_parts[$#file_parts] $outfile`;
+	return 0;
+    }
+
     $mech->get($url);
     
     # Make sure we got the file we were expecting by verifying the md5 checksum
@@ -576,22 +617,6 @@ sub download_file {
     } else {
 	# Checksums match. Save file to the specified
 	# path and file name.
-
-        # This leaves off the .gz in names of zipped files!
-	#my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.'
-	#    . ${$json}{file_format};
-
-	my @file_parts = split /\//, ${$json}{href};
-
-        my $outfile = $download_path . $out_root . '.' . $file_parts[$#file_parts];
-
-	if ($check_exists && -f $outfile) {
-	    # See if file already exists and move on if found
-	    print STDERR "\tFile exists: $outfile. Moving on...\n";
-	    return 1;
-	}
-
-	$outfile =~ s/^\.//;
 	print STDERR "\tSaving file to $outfile...\n";
 	$mech->save_content($outfile);
     }    
