@@ -291,6 +291,9 @@ my $mech = WWW::Mechanize->new(
         # Quick and dirty hack to avoid errors about missing SSL certificates.
     },
     );
+# Set the history stack depth to 0 -- prevents memory usage from getting out of
+# hand for large queries.
+$mech->stack_depth( 0 );
 
 ####################
 # Stage 1: Build the query URL and run the primary query against the ENCODE
@@ -422,6 +425,10 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			   $result{date_released}, &nopath($result{lab}),
 			   $result{accession}, $controls_str, $documents_str);
 		push @metadata, \@row;
+	    } else {
+		# Should  not be necessary, but just to be sure there's no json
+		# hanging around for files we're not using.
+		undef($file_json);
 	    }
 	}
 	
