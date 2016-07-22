@@ -95,6 +95,10 @@ OPTIONS:
 --out-root <root>
     String to prepend to output files.
 
+--check-exists
+    Check to see if a file already exists before downloading and do not
+    retrieve if found.
+
 --save-json
     Save the JSON metadata for every file downloaded. This can be useful for
     identifying individual files and properties later on when retrieving
@@ -214,6 +218,7 @@ my $rec_type = "experiment";
 my $no_header = 0;
 my $count_only = 0;
 my $by_biosample = 0;
+my $check_exists = 0;
 
 GetOptions (
     "help" => \$help,
@@ -227,7 +232,8 @@ GetOptions (
     "rec-type=s" => \$rec_type,
     "no-header" => \$no_header,
     "count-only" => \$count_only,
-    "by-biosample" => \$by_biosample
+    "by-biosample" => \$by_biosample,
+    "check-exists" => \$check_exists
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -488,7 +494,7 @@ if ($download) {
     print STDERR "Downloading $n_results files from ${$json}{total} records...\n";
 }
 foreach my $file_json (@downloads) {
-    &download_file($mech, $file_json, $download_path, $out_root);
+    &download_file($mech, $file_json, $download_path, $out_root, $check_exists);
     if ($save_json) {
 	&save_json($file_json, $download_path, $out_root);
     }
@@ -556,6 +562,7 @@ sub download_file {
     my $json = $_[1];
     my $download_path = $_[2];
     my $out_root = $_[3];
+    my $check_exists = $_[4];
 
     my $url = "https://www.encodeproject.org" . ${$json}{href};
     print STDERR "Found a matching record at $url. Retrieving data...\n";
@@ -577,6 +584,13 @@ sub download_file {
 	my @file_parts = split /\//, ${$json}{href};
 
         my $outfile = $download_path . $out_root . '.' . $file_parts[$#file_parts];
+
+	if ($check_exists && -f $outfile) {
+	    # See if file already exists and move on if found
+	    print STDERR "\tFile exists: $outfile. Moving on...\n";
+	    return 1;
+	}
+
 	$outfile =~ s/^\.//;
 	print STDERR "\tSaving file to $outfile...\n";
 	$mech->save_content($outfile);
