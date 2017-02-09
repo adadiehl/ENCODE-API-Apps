@@ -129,7 +129,8 @@ OPTIONS:
 
 --filter-json \"key1=val1,...,keyN=valN\"
     Search the JSON data for matching key-value pairs not available through
-    the ENCODE search API.
+    the ENCODE search API. For nested terms, use format x.y.z=val, where
+    x, y and z are the nested json attributes.
 
 --help
     Display this message
@@ -232,6 +233,7 @@ my $by_biosample = 0;
 my $check_exists = 0;
 my $use_wget = 0;
 my $filter_json_str;
+my $debug = 0;
 
 GetOptions (
     "help" => \$help,
@@ -248,7 +250,8 @@ GetOptions (
     "by-biosample" => \$by_biosample,
     "check-exists" => \$check_exists,
     "use-wget" => \$use_wget,
-    "filter-json=s" => \$filter_json_str
+    "filter-json=s" => \$filter_json_str,
+    "debug" => \$debug
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -411,7 +414,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # Because metadata for individual files is stored in separate
 	    # records, retrieve these as separate queries against the
 	    # database.
-	    my $url = 'http://www.encodeproject.org' . $file . '?format=json';
+	    my $url = 'http://www.encodeproject.org/' . $file . '?format=json';
 	    
 	    # Get the JSON from the url
 	    my $file_json = &get_json($mech, $url);
@@ -423,34 +426,57 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		# If output_type does not match, reject the file
 		if (@output_types) {
 		    if (${$file_json}{output_type} ne $output_types[$i]) {
+			if ($debug) {
+			    print STDERR "output type ${$file_json}{output_type} does not match\n";
+			}
 			$use_rec = 0;
+			last;
 		    }
 		}
 		
 		# If file_format does not match, reject the file
 		if (@file_formats) {
 		    if (${$file_json}{file_format} ne $file_formats[$i]) {
+			if ($debug) {
+			    print STDERR "file format ${$file_json}{file_format} does not match\n";
+			}
 			$use_rec = 0;
+			last;
 		    }
 		}
 		
 		# If file_format_type does not match, reject the file
-		if (@file_format_types) {
-		    if (${$file_json}{file_format_type} 
-			ne $file_format_types[$i]) {
+		if (@file_format_types && $use_rec) {		    
+		    if (!exists(${$file_json}{file_format_type}) ||
+			${$file_json}{file_format_type} ne $file_format_types[$i]) {
+			if ($debug) {
+			    print STDERR "file format type ${$file_json}{file_format_type} does not match\n";
+			}
 			$use_rec = 0;
+			last;
 		    }
 		}
 
 		# If we have other terms to check for in the json data, check them
 		if (%json_filter) {
 		    foreach my $key (keys(%json_filter)) {
-			if (exists(${$file_json}{$key})) {
-			    if (${$file_json}{$key} ne $json_filter{$key}) {
-				$use_rec = 0;
+			my @tmp = split /\./, $key;
+		
+			my $tmp_json = $file_json;
+			if ($#tmp > 0) {
+			    for (my $j = 0; $j < $#tmp; $j++) {
+				if (exists($file_json->{$tmp[$j]})) {
+				    $tmp_json = $file_json->{$tmp[$j]};
+				}
 			    }
-			} else {
-			    print STDERR "WARNING: Specified JSON key $key does not exist in file JSON. Ignoring filter term!\n";
+			}
+	
+			if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key} ||
+			    !exists($tmp_json->{$tmp[$#tmp]})) {
+			    $use_rec = 0;
+			}			   
+			if (!exists($tmp_json->{$tmp[$#tmp]})) {
+			    print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
 			}
 		    }
 		}
