@@ -127,6 +127,10 @@ OPTIONS:
     useful when a search for a specific cell line is yielding either no
     results or imprecise results.
 
+--filter-json \"key1=val1,...,keyN=valN\"
+    Search the JSON data for matching key-value pairs not available through
+    the ENCODE search API.
+
 --help
     Display this message
 
@@ -227,6 +231,7 @@ my $count_only = 0;
 my $by_biosample = 0;
 my $check_exists = 0;
 my $use_wget = 0;
+my $filter_json_str;
 
 GetOptions (
     "help" => \$help,
@@ -242,7 +247,8 @@ GetOptions (
     "count-only" => \$count_only,
     "by-biosample" => \$by_biosample,
     "check-exists" => \$check_exists,
-    "use-wget" => \$use_wget
+    "use-wget" => \$use_wget,
+    "filter-json=s" => \$filter_json_str
     );
 
 # Check for proper usage and help option and exit with usage message as needed.
@@ -303,6 +309,14 @@ if (defined($file_format_type_str)) {
     if ($#file_format_types != $#output_types) {
         die "\n--file-format-type and --output-type must have the same number of fields!\n";
     }
+}
+
+# Process the filter json string
+my %json_filter;
+my @tmp = split /,/, $filter_json_str;
+foreach my $term (@tmp) {
+    my @tmp2 = split /=/, $term;
+    $json_filter{$tmp2[0]} = $tmp2[1];
 }
 
 # Set up the virtual browser
@@ -425,6 +439,19 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		    if (${$file_json}{file_format_type} 
 			ne $file_format_types[$i]) {
 			$use_rec = 0;
+		    }
+		}
+
+		# If we have other terms to check for in the json data, check them
+		if (%json_filter) {
+		    foreach my $key (keys(%json_filter)) {
+			if (exists(${$file_json}{$key})) {
+			    if (${$file_json}{$key} ne $json_filter{$key}) {
+				$use_rec = 0;
+			    }
+			} else {
+			    print STDERR "WARNING: Specified JSON key $key does not exist in file JSON. Ignoring filter term!\n";
+			}
 		    }
 		}
 	    }
