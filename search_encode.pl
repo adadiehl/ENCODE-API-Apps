@@ -137,9 +137,15 @@ OPTIONS:
 --filter-json \"key1=val1,...,keyN=valN\"
     Search the JSON data for matching key-value pairs not available through
     the ENCODE search API. For nested terms, use format x.y.z=val, where
-    x, y and z are the nested json attributes. Currently only works for 
-    hash elements (enclosed in curly brackets: {...}), not array elements
-    (enclosed in square brackets: [...]).
+    x, y and z are the nested json attributes. Works for both hash elements
+    (enclosed in curly brackets in the json data: {...}), and array elements
+    (enclosed in square brackets in the json data: [...]), but with slightly
+    different behavior. For hash elements, the value stored within the hash
+    key given must be an exact match to the value. For array elements, a
+    record will be accepted if ANY values within the array exactlty match
+    the query value. It is currently only possible to search within named
+    elements, thus hash/array elements nested within another array are not
+    available.
 
 --help
     Display this message
@@ -479,12 +485,26 @@ foreach my $row (@{${$json}{'@graph'}}) {
 				}
 			    }
 			}
-	
-			if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key} ||
-			    !exists($tmp_json->{$tmp[$#tmp]})) {
+
+			if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
+			    # If the target attribute is an array, look for any match
+			    # to the query term in the array.
 			    $use_rec = 0;
-			}			   
+			    foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
+				if ($debug) {
+				    print STDERR "$attr, $json_filter{$key}\n";
+				}
+				if ($attr eq $json_filter{$key}) {
+				    $use_rec = 1;
+				} 
+			    }
+			} else {			
+			    if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
+				$use_rec = 0;
+			    }
+			}	   
 			if (!exists($tmp_json->{$tmp[$#tmp]})) {
+			    $use_rec = 0;
 			    print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
 			}
 		    }
