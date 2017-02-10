@@ -60,6 +60,13 @@ search_encode.pl <search term> <params string> [OPTIONS]
 
     Use the empty string \"\" for no parameters.
 
+    NOTE: Due to changes in the ENCODE portal after the official switch
+    to hg38 as the default human genome assembly, it is now advisable to
+    specify the desired genome assembly (hg19 or hg38) for file downloads
+    as a json parameter, using '--filter-json \"assembly=hg19\"', for
+    example. See the section below for the --filter-json option for more
+    details. 
+
 
 OPTIONS:
 
@@ -130,7 +137,9 @@ OPTIONS:
 --filter-json \"key1=val1,...,keyN=valN\"
     Search the JSON data for matching key-value pairs not available through
     the ENCODE search API. For nested terms, use format x.y.z=val, where
-    x, y and z are the nested json attributes.
+    x, y and z are the nested json attributes. Currently only works for 
+    hash elements (enclosed in curly brackets: {...}), not array elements
+    (enclosed in square brackets: [...]).
 
 --help
     Display this message
