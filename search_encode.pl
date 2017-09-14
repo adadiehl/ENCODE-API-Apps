@@ -239,7 +239,7 @@ my $output_type_str;
 my $file_format_str;
 my $file_format_type_str;
 my $download_path = "";
-my $out_root = "";
+my $out_root;
 my $save_json = 0;
 my $rec_type = "experiment";
 my $no_header = 0;
@@ -563,10 +563,7 @@ my $n_results = $#metadata+1;
 
 # Set up the metadata file handle
 my $DATA;
-my $outfile = $download_path . $out_root . '.metadata';
-# Make sure file name does not start with a . (i.e., no path or root
-# were supplied)
-$outfile =~ s/^\.//;
+my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
 open $DATA, '>', $outfile;
 
 # Prepare and print the header
@@ -651,11 +648,32 @@ sub save_json {
     my $download_path = $_[1];
     my $out_root = $_[2];
 
-    my $outfile = $download_path . $out_root . '.' . ${$json}{accession} . '.json';
-    $outfile =~ s/^\.//;
+    
+    my $outfile = build_write_path($download_path, $out_root, [${$json}{accession}, 'json']);
     open my $OUT, '>', $outfile;
     print $OUT to_json($json, {pretty=>1});
     close $OUT;
+}
+
+sub build_write_path {
+    # Build a filename and write path
+    my ($download_path, $out_root, $args) = @_;
+    # Last variable is an array reference for any additional file name parts
+    # including the file extension. These will be '.' delimited.
+    my $outfile;
+    if (defined($out_root)) {
+	$outfile = join '.', ($out_root, @{$args});
+    } else {
+	$outfile = join '.', @{$args};
+    }
+    if (defined($download_path)) {
+	if ($download_path !~ m/\/$/) {
+	    $download_path .= '/';
+	}
+	$outfile = $download_path . $outfile;
+    }
+    #print STDERR "$outfile";
+    return $outfile;
 }
 
 sub download_file {
@@ -670,8 +688,7 @@ sub download_file {
 
 
     my @file_parts = split /\//, ${$json}{href};
-    my $outfile = $download_path . $out_root . '.' . $file_parts[$#file_parts];
-    $outfile =~ s/^\.//;
+    my $outfile = build_write_path($download_path, $out_root, [$file_parts[$#file_parts]]);
 
     if ($check_exists && -f $outfile) {
         # See if file already exists and move on if found
