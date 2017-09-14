@@ -238,7 +238,7 @@ my $download = 0;
 my $output_type_str;
 my $file_format_str;
 my $file_format_type_str;
-my $download_path = "";
+my $download_path;
 my $out_root;
 my $save_json = 0;
 my $rec_type = "experiment";
