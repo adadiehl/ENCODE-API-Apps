@@ -281,7 +281,7 @@ if (defined($output_type_str) && !$download) {
 if (defined($file_format_type_str) && !defined($file_format_str)) {
     die "\n--file-format-type requires --file-format. Try --help.\n";
 }
-if ($download_path ne "" && !$download) {
+if (defined($download_path) && !$download) {
     die "\n--download-path requires --download. Try --help\n";
 }
 if ($download && !defined($output_type_str)) {
@@ -301,7 +301,7 @@ if ($use_wget) {
 }
 
 # Check the download path for a trailing slash and add one if needed
-if ($download_path ne "") {
+if (defined($download_path)) {
     if ($download_path !~ m/\/$/) {
 	$download_path .= '/';
     }
@@ -331,10 +331,12 @@ if (defined($file_format_type_str)) {
 
 # Process the filter json string
 my %json_filter;
-my @tmp = split /,/, $filter_json_str;
-foreach my $term (@tmp) {
-    my @tmp2 = split /=/, $term;
-    $json_filter{$tmp2[0]} = $tmp2[1];
+if (defined($filter_json_str)) {
+    my @tmp = split /,/, $filter_json_str;
+    foreach my $term (@tmp) {
+	my @tmp2 = split /=/, $term;
+	$json_filter{$tmp2[0]} = $tmp2[1];
+    }
 }
 
 # Set up the virtual browser
@@ -344,6 +346,7 @@ my $mech = WWW::Mechanize->new(
         # Quick and dirty hack to avoid errors about missing SSL certificates.
     },
     stack_depth => 0,
+    autocheck => 0
     );
 
 ####################
