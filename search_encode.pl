@@ -369,7 +369,7 @@ if ($by_biosample) {
 }
 
 # Build the query URL from the command line args and parameters
-$URL = 'http://www.encodeproject.org/search/?searchTerm=';
+$URL = 'https://www.encodeproject.org/search/?searchTerm=';
 $URL .= $search_str;
 $URL .= "&type=";
 $URL .= $rec_type;
