@@ -43,40 +43,34 @@ allows comparison by target of assay.
 
 USAGE:
 
-search_human-mouse.pl <search term 1> <search term 2> <params string> [OPTIONS]
+search_human-mouse.pl <search term 1,...,search term N> [OPTIONS]
 
-<search term 1>
-    Search term for species 1. Can be cell line, tissue type, etc. Try to use
-    as precise a term as possible for best results!
+<search term 1,...,search term N>
+    Comma-delimited string of search terms. Can be cell line, tissue type, etc.
+    Try to use as precise a term as possible for best results!
 
-<search term 2>
-    Search term for species 2. Can be cell line, tissue type, etc. See notes 
-    fore <search term 1>.
+OPTIONS:
 
-<params string>
-    String of key=value pairs corresponding to columns in the
+--species <scientific name 1,...,scientific name N>
+    Comma-delimited list of scientific names for all query terms, in
+    the same order. Each must be valid scientific name of a species
+    present in the ENCODE repository. See ___ for a list. Default:
+    \"Homo sapiens,Mus musculus\".
+
+--params
+    Used to supply additional search parameters to narrow the results.
+    Supplied as key=value pairs corresponding to columns in the
     given database table. See the schema at the address above. Some columns
     have sub-keys that can be searched. See the supplemental table SX at
     http://address_for_supplement.com/supplement.xls for a listing.
-    
+
     Possible keys of interest for experiments:
+
         biosample_term_name: tissue/cell used in assay
         assay_term_name: type of assay (e.g., ChIP-seq)
         target.investigated_as: type of target (e.g, transcription factor)
         target.label: name of factor probed (e.g., CTCF)
         status: status of experiment (released/revoked)
-
-    Use the empty string \"\" for no parameters.
-
-
-OPTIONS:
-
---species-1 <scientific name>
-    Name of first species. Must be valid scientific name of a species present
-    in the ENCODE repository. See ___ for a list. Default: Homo sapiens.
-
---species-2 <scientific name>
-    Name of second species. See notes for --species-1. Default: Mus musculus.
 
 --download
     Download files associated with the results. Type(s) of files may be
@@ -158,12 +152,12 @@ Find all transcription-factor ChIP-seq datasets for factors with data in both
 human K562 and mouse MEL cells, and download the bigBed peak annotation files
 for all of them.
 
-/search_human-mouse.pl K562 MEL \"&assay_term_name=ChIP-seq&target.investigated_as=transcription factor\" --out-root chipseq --download --output-type peaks --file-format bigBed
+./search_human-mouse.pl K562,MEL --params \"&assay_term_name=ChIP-seq&target.investigated_as=transcription factor\" --out-root chipseq --download --output-type peaks --file-format bigBed
 
 
 CREDITS AND LICENSE:
 
-Copyright (C) 2015, Adam Diehl
+Copyright (C) 2017, Adam Diehl
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -185,17 +179,15 @@ Originally published in \"Deciphering ENCODE\". If you use this tool in your
 research, please cite:
 
 Diehl AD and Boyle AP (2016) Deciphering ENCODE.
-Trends in Genetics. (rest of reference here...)
+Trends in Genetics. Volume 32, Issue 4, 238-249.
 
 \n";
 
-if ($#ARGV + 1 < 3) {
+if ($#ARGV + 1 < 2) {
     die "$usage\n";
 }
 
-my $search_str_1 = $ARGV[0];
-my $search_str_2 = $ARGV[1];
-my $params = $ARGV[2];
+my @search_terms = split /,/, $ARGV[0];
 
 my $help = 0;
 my $download = 0;
@@ -205,8 +197,8 @@ my $file_format_type_str;
 my $download_path = "";
 my $out_root = "";
 my $save_json = 0;
-my $species_1 = "Homo sapiens";
-my $species_2 = "Mus musculus";
+my $species_str = "Homo sapiens,Mus musculus";
+my $params = "";
 
 GetOptions (
     "help" => \$help,
@@ -217,9 +209,10 @@ GetOptions (
     "download-path=s" => \$download_path,
     "out-root=s" => \$out_root,
     "save-json" => \$save_json,
-    "species-1=s" => \$species_1,
-    "species-2=s" => \$species_2
+    "species=s" => \$species_str,
+    "params=s" => \$params
     );
+
 
 # Check for help option and exit with usage message if found.
 if ($help) {
@@ -277,38 +270,37 @@ my $mech = WWW::Mechanize->new(
     },
     );
 
+# Prepare the species array
+my @species = split /,/, $species_str;
+
 #################################
 # Step 1: Run the primary queries for each species against the ENCODE Portal
 
-# Get search results for human and mouse in individual hashes.
-my %species_1_data = &get_search_data($mech, $species_1, $search_str_1,
-				      $params);
-my %species_2_data = &get_search_data($mech,$species_2, $search_str_2,
-                                      $params);
+# Get search results for each species/term combination and store in an array
+# of hashes.
+my @data;
+for (my $i = 0; $i <= $#search_terms; $i++) {
+    push @data, &get_search_data($mech, $species[$i], $search_terms[$i],
+				 $params);
+}
 
 
 #################################
-# Step 2: Find the intersection between the two sets of experiments
+# Step 2: Find the intersection between the sets of experiments
 
-# Cycle through species_1_data and store references to all experiments for
-# which there is a matching key in species_2_data.
-my @intersection;
+# Cycle through the first two experiments and store all data for
+# which there is a matching key in both. Use the stored intersection
+# as the basis for the next comparison, and so on...
 print STDERR "Finding intersecting terms...\n";
-my $n_factors = 0;
-foreach my $key (sort(keys(%species_1_data))) {
-#    print STDERR "$key\n";
 
-    if (exists($species_2_data{$key})) {
-	$n_factors++;
-	foreach my $result (@{$species_1_data{$key}}) {
-	    push @intersection, $result;
-	}
-	foreach my $result (@{$species_2_data{$key}}) {
-            push @intersection, $result;
-	}
-    }     
+my %int = compare_res_hashes($data[0], $data[1]);
+for (my $i = 2; $i <= $#data; $i++) {
+    %int = compare_res_hashes(\%int, $data[$i]);
 }
+
+my $n_factors = keys(%int);
 print STDERR "Found $n_factors terms with data in both species.\n";
+my @intersection = stuff_array(\%int);
 
 #################################
 # Step 3: Find the files we want within experiments in the intersection
@@ -508,14 +500,14 @@ sub get_search_data {
 	push @{$results{$target}}, $row;
     }
     
-    return %results;
+    return \%results;
 }
 
 sub get_json {
     # Retrieve JSON data from a URL and return it as a data structure.
-    my $mech = $_[0];
-    my $url = $_[1];
-    $mech->get($url);
+    my ($mech, $url) = @_;
+    print STDERR "$url\n";
+    $mech->get($url);    
     my $json = decode_json($mech->content);
     return $json;
 }
@@ -599,4 +591,26 @@ sub nopath {
     $str =~ s/\/$//;
     $str =~ s/\/\S+\///;
     return $str;
+}
+
+sub compare_res_hashes {
+    my ($res_1, $res_2) = @_;
+    my %intersection;
+    foreach my $key (sort(keys(%{$res_1}))) {
+	#    print STDERR "$key\n";
+	if (exists($res_2->{$key})) {
+	    $intersection{$key} = [@{$res_1->{$key}}, @{$res_2->{$key}}]
+	}
+    }
+    return %intersection;
+}
+
+sub stuff_array {
+    my ($int) = @_;
+
+    my @res;
+    foreach my $key (sort(keys(%{$int}))) {
+	push @res, @{$int->{$key}};
+    }
+    return @res;
 }
