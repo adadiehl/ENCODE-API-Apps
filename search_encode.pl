@@ -414,6 +414,34 @@ if ( ${$json}{error_status} ) {
 # Stage Two: Find the files we need within the search results.
 # Individual search results are within the embedded array @graph.
 
+# Prepare the metadata file header
+my @header;
+if ($download || $file_list) {
+    # File-centric header                                                                                                                                          
+    @header = ("file", "accession", "output_type", "biological_replicate",
+               "technical_replicate", "assembly", "status", "dataset_type", "biosample_term_name",
+               "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
+               "date_released", "lab", "parent accession", "possible_controls",
+               "documents", "href");
+} else {
+    # Experiment-centric header                                                                                                                                    
+    @header = ("accession", "dataset_type", "biosample_term_name",
+               "biosample_type", "assay_term_name", "target", "status",
+               "date_released", "lab", "files", "possible_controls",
+               "documents");
+}
+
+# Open a stream to the metadata file
+my $DATA;
+my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
+open $DATA, '>', $outfile;
+
+# Print the metadata file header, if requested.
+unless ($no_header) {
+    &print_array(\@header, "\t", $DATA);
+}
+
+
 #my $mech_size = total_size($mech);
 #print STDERR "Size of $mech: $mech_size\n";
 
@@ -557,7 +585,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		}
 		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
 		    
-		my @row = (&nopath($file_json->{href}),
+		my $row = [&nopath($file_json->{href}),
 			   $file_json->{accession}, $file_json->{output_type},
 			   $biorep,
 			   $trep,
@@ -572,8 +600,18 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			   $result{date_released}, &nopath($result{lab}),
 			   $result{accession}, $controls_str, $documents_str,
 			   "https://www.encodeproject.org" . $file_json->{href},
-			   );
-		push @metadata, \@row;
+		    ];
+
+		# Correct any undefined metadata values
+		for (my $i = 0; $i <= $#{$row}; $i++) {
+		    if (!defined(${$row}[$i])) {
+			${$row}[$i] = '.';
+		    }
+		}
+
+		# Print a metadata row
+		&print_array($row, "\t", $DATA);
+		
 	    } else {
 		# Should  not be necessary, but just to be sure there's no json
 		# hanging around for files we're not using.
@@ -601,36 +639,10 @@ foreach my $row (@{${$json}{'@graph'}}) {
 #print STDERR "Size of $mech: $mech_size\n";
 
 #######################
-# Stage 3: Download the data and metadata. Optionally save the file json.
+# Stage 3: Download data. Optionally save the file json.
 
 # Number of files/records
 my $n_results = $#metadata+1;
-
-# Set up the metadata file handle
-my $DATA;
-my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
-open $DATA, '>', $outfile;
-
-# Prepare and print the header
-my @header;
-if ($download || $file_list) {
-    # File-centric header
-    @header = ("file", "accession", "output_type", "biological_replicate",
-	       "technical_replicate", "assembly", "status", "dataset_type", "biosample_term_name",
-	       "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
-	       "date_released", "lab", "parent accession", "possible_controls",
-	       "documents", "href");
-} else {
-    # Experiment-centric header
-    @header = ("accession", "dataset_type", "biosample_term_name",
-	       "biosample_type", "assay_term_name", "target", "status",
-	       "date_released", "lab", "files", "possible_controls",
-	       "documents");
-}
-
-unless ($no_header) {
-    &print_array(\@header, "\t", $DATA);
-}
 
 # Download the files
 if ($download) {
@@ -669,6 +681,8 @@ sub get_json {
     my $mech = $_[0];
     my $url = $_[1];
 
+    my $max_tries = 10; # TO-DO: make this configurable
+
     my $status = eval {
 	$mech->get($url);
 	1
@@ -678,12 +692,27 @@ sub get_json {
     if (!$status) {
 	# For some reason, the portal sometimes returns an error when there
 	# are no results. In these cases, use a dummy json to notify the user.
-	$content = '{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }';
-    } else {
+	return decode_json('{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }');
+    } else {	
 	$content = $mech->content;
     }
 
-    my $json = decode_json($content);
+    my $json;
+    eval { $json = decode_json($content); };
+    
+    # Retry if there is an error.
+    my $tries = 2;
+    while ($@ && $tries <= $max_tries) {
+	if ($debug) {
+	    print STDERR "Retrying json retrieval: attempt $tries of $max_tries...\n";
+	}
+	$tries++;
+	$content = $mech->content;
+	eval { $json = decode_json($content); };
+    }
+    if ($@) {
+	return decode_json('{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }');
+    }
     return $json;
 }
 
