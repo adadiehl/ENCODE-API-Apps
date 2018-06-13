@@ -75,6 +75,11 @@ OPTIONS:
     specified with the --file-type flag. Currently only tested for results
     of type \"experiment\". May behave unpredictably for other types!
 
+--file-list
+    Instead of downloading files, print a table of metadata for files
+    matching the given criteria. Compatible with the same options as
+    --download.
+
 --output-type <type_1,...,type_n>
     Used with --download, limits results to files of given type(s).
     Multiple types may be supplied as a comma-separated list. File types are
@@ -235,6 +240,7 @@ my $params = $ARGV[1];
 
 my $help = 0;
 my $download = 0;
+my $file_list = 0;
 my $output_type_str;
 my $file_format_str;
 my $file_format_type_str;
@@ -253,6 +259,7 @@ my $debug = 0;
 GetOptions (
     "help" => \$help,
     "download" => \$download,
+    "file-list" => \$file_list,
     "output-type=s" => \$output_type_str,
     "file-format=s" => \$file_format_str,
     "file-format-type=s" => \$file_format_type_str,
@@ -275,12 +282,12 @@ if ($help || $#ARGV+1 < 2) {
 }
 
 # Check for other options and do some sanity checks...
-if (defined($output_type_str) && !$download) {
-    die "\n--output-type only works with --download. Try --help.\n";
+if (defined($output_type_str) && !($download || $file_list) ) {
+    die "\n--output-type only works with --download or --file-list. Try --help.\n";
 }
-if (defined($file_format_type_str) && !defined($file_format_str)) {
-    die "\n--file-format-type requires --file-format. Try --help.\n";
-}
+#if (defined($file_format_type_str) && !defined($file_format_str)) {
+#    die "\n--file-format-type requires --file-format. Try --help.\n";
+#}
 if (defined($download_path) && !$download) {
     die "\n--download-path requires --download. Try --help\n";
 }
@@ -299,6 +306,9 @@ if ($use_wget) {
 	die "Cannot find wget on your system. Please try again without --use-wget.\n";
     }
 }
+if (defined($filter_json_str) && !($download || $file_list)) {
+    print STDERR "\nWarning: --filter_json_str has no effect without --download or --file-list.\n";
+}
 
 # Check the download path for a trailing slash and add one if needed
 if (defined($download_path)) {
@@ -316,17 +326,11 @@ if (defined($output_type_str)) {
 my @file_formats;
 if (defined($file_format_str)) {
     @file_formats = split /,/, $file_format_str;
-    if ($#file_formats != $#output_types) {
-        die "\n--file-format and --output-type must have the same number of fields!\n";
-    }
 }
 
 my @file_format_types;
 if (defined($file_format_type_str)) {
     @file_format_types = split /,/, $file_format_type_str;
-    if ($#file_format_types != $#output_types) {
-        die "\n--file-format-type and --output-type must have the same number of fields!\n";
-    }
 }
 
 # Process the filter json string
@@ -416,15 +420,18 @@ if ( ${$json}{error_status} ) {
 my @downloads;  # To hold pointers to the files we will download
 my @metadata;   # To hold metadata for the files we will download
 my $n_files = 0;
+my $ds = 1;
 foreach my $row (@{${$json}{'@graph'}}) {
 
     # Each row of the array contains a hash reference to a search result.
     # Make a copy of the hash for convenience.
     my %result = %{$row};
 
-    if ($download) {
+    if ($download || $file_list) {
 	# If we are downloading data files, use a file-centric process and
 	# metadata format.
+	print STDERR "Processing files for result $ds...\n";
+	$ds++;
 	
 	my @files = @{$result{files}};
 	foreach my $file (@files) {
@@ -433,16 +440,17 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # records, retrieve these as separate queries against the
 	    # database.
 	    my $url = 'http://www.encodeproject.org/' . $file . '?format=json';
+	    #print STDERR "$url\n";
 	    
 	    # Get the JSON from the url
 	    my $file_json = &get_json($mech, $url);
 	    
 	    # Examine the JSON to see if the file matches our criteria
 	    my $use_rec = 1; # Download all files by default
-	    for (my $i = 0; $i <= $#output_types ; $i++) {
 		
-		# If output_type does not match, reject the file
-		if (@output_types) {
+	    # If output_type does not match, reject the file
+	    if (@output_types) {
+		for (my $i = 0; $i <= $#output_types ; $i++) {
 		    if (${$file_json}{output_type} ne $output_types[$i]) {
 			if ($debug) {
 			    print STDERR "output type ${$file_json}{output_type} does not match\n";
@@ -451,86 +459,120 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			last;
 		    }
 		}
+	    }
 		
-		# If file_format does not match, reject the file
-		if (@file_formats) {
+	    # If file_format does not match, reject the file
+	    if (@file_formats && $use_rec) {
+		for (my $i = 0; $i <= $#file_formats ; $i++) {
 		    if (${$file_json}{file_format} ne $file_formats[$i]) {
 			if ($debug) {
 			    print STDERR "file format ${$file_json}{file_format} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
+	    }
 		
-		# If file_format_type does not match, reject the file
-		if (@file_format_types && $use_rec) {		    
+	    # If file_format_type does not match, reject the file
+	    if (@file_format_types && $use_rec) {
+		for (my $i = 0; $i <= $#file_format_types ; $i++) {
 		    if (!exists(${$file_json}{file_format_type}) ||
 			${$file_json}{file_format_type} ne $file_format_types[$i]) {
 			if ($debug) {
 			    print STDERR "file format type ${$file_json}{file_format_type} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
+	    }
 
-		# If we have other terms to check for in the json data, check them
-		if (%json_filter) {
-		    foreach my $key (keys(%json_filter)) {
-			my @tmp = split /\./, $key;
-		
-			my $tmp_json = $file_json;
-			if ($#tmp > 0) {
-			    for (my $j = 0; $j < $#tmp; $j++) {
-				if (exists($file_json->{$tmp[$j]})) {
-				    $tmp_json = $file_json->{$tmp[$j]};
-				}
+	    # If we have other terms to check for in the json data, check them
+	    if (%json_filter && $use_rec) {
+		foreach my $key (keys(%json_filter)) {
+		    my @tmp = split /\./, $key;
+		    
+		    my $tmp_json = $file_json;
+		    if ($#tmp > 0) {
+			for (my $j = 0; $j < $#tmp; $j++) {
+			    if (exists($file_json->{$tmp[$j]})) {
+				$tmp_json = $file_json->{$tmp[$j]};
 			    }
 			}
-
-			if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
-			    # If the target attribute is an array, look for any match
-			    # to the query term in the array.
-			    $use_rec = 0;
-			    foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
-				if ($debug) {
-				    print STDERR "$attr, $json_filter{$key}\n";
-				}
-				if ($attr eq $json_filter{$key}) {
-				    $use_rec = 1;
-				} 
+		    }
+		    
+		    if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
+			# If the target attribute is an array, look for any match
+			# to the query term in the array.
+			$use_rec = 0;
+			foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
+			    if ($debug) {
+				print STDERR "$attr, $json_filter{$key}\n";
 			    }
-			} else {			
-			    if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
-				$use_rec = 0;
-			    }
-			}	   
-			if (!exists($tmp_json->{$tmp[$#tmp]})) {
-			    $use_rec = 0;
-			    print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
+			    if ($attr eq $json_filter{$key}) {
+				$use_rec = 1;
+			    } 
 			}
+		    } else {			
+			if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
+			    $use_rec = 0;
+			}
+		    }	   
+		    if (!exists($tmp_json->{$tmp[$#tmp]})) {
+			$use_rec = 0;
+			print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
 		    }
 		}
 	    }
 	    
 	    if ($use_rec) {
 		# Store a pointer to the file_json in our array
-		push @downloads, $file_json;
+		if ($download) {
+		    push @downloads, $file_json;
+		}
 		
 		# Build a row for the metadata table
 		my $controls_str = join ",", &nopaths($result{possible_controls});
 		my $documents_str = join ",", &nopaths($result{documents});
-		
-		my @row = (&nopath(${$file_json}{href}),
-			   ${$file_json}{accession}, ${$file_json}{output_type},
-			   ${${$file_json}{replicate}}{biological_replicate_number},
-			   ${${$file_json}{replicate}}{technical_replicate_number},
+
+		my $biorep = $file_json->{replicate}->{biological_replicate_number};
+		if (!defined($biorep)) {
+		    $biorep = $file_json->{biological_replicates}->[0];
+		}
+		my $trep = $file_json->{replicate}->{technical_replicate_number};
+		if (!defined($trep)) {
+		    $trep = $file_json->{technical_replicates}->[0];
+		}
+
+		my $url = 'http://www.encodeproject.org' . $file_json->{dataset} . '?format=JSON';
+		#print STDERR "$url\n";
+		my $pd_json = get_json($mech, $url);
+		#my @bs_acc;
+		#foreach my $bs (@{$pd_json->{replicates}}) {		
+		#    #print STDERR $bs->{library}->{biosample}->{donor}->{accession}, "\n";
+		#    push @bs_acc, $bs->{library}->{biosample}->{donor}->{accession}; 
+		#}
+		my $idx = 0;
+		if (defined($biorep)) {
+		    $idx = $biorep-1;
+		}
+		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
+		    
+		my @row = (&nopath($file_json->{href}),
+			   $file_json->{accession}, $file_json->{output_type},
+			   $biorep,
+			   $trep,
+			   $file_json->{assembly},
+			   $file_json->{status},
 			   $result{dataset_type}, $result{biosample_term_name},
-			   $result{biosample_type}, $result{assay_term_name},
+			   $result{biosample_type},
+			   #join(',', @bs_acc),
+			   $bs_acc,
+			   $result{assay_term_name},
 			   &nopath($result{target}), $result{status},
 			   $result{date_released}, &nopath($result{lab}),
-			   $result{accession}, $controls_str, $documents_str);
+			   $result{accession}, $controls_str, $documents_str,
+			   "https://www.encodeproject.org" . $file_json->{href},
+			   );
 		push @metadata, \@row;
 	    } else {
 		# Should  not be necessary, but just to be sure there's no json
@@ -571,13 +613,13 @@ open $DATA, '>', $outfile;
 
 # Prepare and print the header
 my @header;
-if ($download) {
+if ($download || $file_list) {
     # File-centric header
     @header = ("file", "accession", "output_type", "biological_replicate",
-	       "technical_replicate", "dataset_type", "biosample_term_name",
-	       "biosample_type", "assay_term_name", "target", "status",
+	       "technical_replicate", "assembly", "status", "dataset_type", "biosample_term_name",
+	       "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
 	       "date_released", "lab", "parent accession", "possible_controls",
-	       "documents");
+	       "documents", "href");
 } else {
     # Experiment-centric header
     @header = ("accession", "dataset_type", "biosample_term_name",
