@@ -448,6 +448,7 @@ unless ($no_header) {
 my @downloads;  # To hold pointers to the files we will download
 my @metadata;   # To hold metadata for the files we will download
 my $n_files = 0;
+my $n_results = 0;
 my $ds = 1;
 foreach my $row (@{${$json}{'@graph'}}) {
 
@@ -472,6 +473,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    
 	    # Get the JSON from the url
 	    my $file_json = &get_json($mech, $url);
+	    if (defined($file_json->{error_status}) &&
+		$file_json->{error_status} == 1) {
+		print STDERR "JSON retrieval error for $url: $file_json->{notification}.\n";
+		next;
+	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
 	    my $use_rec = 1; # Download all files by default
@@ -585,7 +591,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		}
 		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
 		    
-		my $row = [&nopath($file_json->{href}),
+		my @row = (&nopath($file_json->{href}),
 			   $file_json->{accession}, $file_json->{output_type},
 			   $biorep,
 			   $trep,
@@ -600,17 +606,19 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			   $result{date_released}, &nopath($result{lab}),
 			   $result{accession}, $controls_str, $documents_str,
 			   "https://www.encodeproject.org" . $file_json->{href},
-		    ];
+		    );
 
 		# Correct any undefined metadata values
-		for (my $i = 0; $i <= $#{$row}; $i++) {
-		    if (!defined(${$row}[$i])) {
-			${$row}[$i] = '.';
+		for (my $i = 0; $i <= $#row; $i++) {
+		    if (!defined($row[$i])) {
+			$row[$i] = '.';
 		    }
 		}
 
 		# Print a metadata row
-		&print_array($row, "\t", $DATA);
+		&print_array(\@row, "\t", $DATA);
+
+		$n_results++
 		
 	    } else {
 		# Should  not be necessary, but just to be sure there's no json
@@ -631,18 +639,23 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		   $result{status}, $result{date_released},
 		   &nopath($result{lab}), $files_str, $controls_str,
 		   $documents_str);
-	push @metadata, \@row;
+	for (my $i = 0; $i <= $#row; $i++) {
+	    if (!defined($row[$i])) {
+		$row[$i] = '.';
+	    }
+	}
+	print_array(\@row, "\t", $DATA);
+	$n_results++
     }
 }
+
+print STDERR "Wrote $n_results rows of metadata to \"$outfile\"....\n";
 
 #$mech_size = total_size($mech);
 #print STDERR "Size of $mech: $mech_size\n";
 
 #######################
 # Stage 3: Download data. Optionally save the file json.
-
-# Number of files/records
-my $n_results = $#metadata+1;
 
 # Download the files
 if ($download) {
@@ -655,18 +668,6 @@ foreach my $file_json (@downloads) {
     }
 #    $mech_size = total_size($mech);
 #    print STDERR "Size of $mech: $mech_size\n";
-}
-
-# Print the metadata
-print STDERR "Writing $n_results rows of metadata to \"$outfile\"...\n";
-foreach my $row (@metadata) {
-    # Check for any undefined values
-    for (my $i = 0; $i <= $#{$row}; $i++) {
-	if (!defined(${$row}[$i])) {
-	    ${$row}[$i] = '.';
-	}
-    }
-    &print_array($row, "\t", $DATA);
 }
 
 close $DATA;
@@ -711,7 +712,7 @@ sub get_json {
 	eval { $json = decode_json($content); };
     }
     if ($@) {
-	return decode_json('{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }');
+	return decode_json('{ "notification": "Max tries reached. Aborting.", "total": 0, "error_status": 1 }');
     }
     return $json;
 }
