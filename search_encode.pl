@@ -485,20 +485,31 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # If output_type does not match, reject the file
 	    if (@output_types) {
 		for (my $i = 0; $i <= $#output_types ; $i++) {
-		    if (${$file_json}{output_type} ne $output_types[$i]) {
+		    if (!exists(${$file_json}{output_type})) {
+			$use_rec = 0;
+			last;
+		    } elsif (${$file_json}{output_type} eq $output_types[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "output type ${$file_json}{output_type} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
 	    }
-		
+	    
 	    # If file_format does not match, reject the file
 	    if (@file_formats && $use_rec) {
 		for (my $i = 0; $i <= $#file_formats ; $i++) {
-		    if (${$file_json}{file_format} ne $file_formats[$i]) {
+		    if (!exists(${$file_json}{file_format})) {
+			$use_rec = 0;
+			last;
+		    } elsif (${$file_json}{file_format} eq $file_formats[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "file format ${$file_json}{file_format} does not match\n";
 			}
@@ -510,8 +521,13 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # If file_format_type does not match, reject the file
 	    if (@file_format_types && $use_rec) {
 		for (my $i = 0; $i <= $#file_format_types ; $i++) {
-		    if (!exists(${$file_json}{file_format_type}) ||
-			${$file_json}{file_format_type} ne $file_format_types[$i]) {
+		    if (!exists(${$file_json}{file_format_type})) {
+			$use_rec = 0;
+                        last;
+		    } elsif (${$file_json}{file_format_type} eq $file_format_types[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "file format type ${$file_json}{file_format_type} does not match\n";
 			}
