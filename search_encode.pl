@@ -596,13 +596,8 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		my $url = 'http://www.encodeproject.org' . $file_json->{dataset} . '?format=JSON';
 		#print STDERR "$url\n";
 		my $pd_json = get_json($mech, $url);
-		#my @bs_acc;
-		#foreach my $bs (@{$pd_json->{replicates}}) {		
-		#    #print STDERR $bs->{library}->{biosample}->{donor}->{accession}, "\n";
-		#    push @bs_acc, $bs->{library}->{biosample}->{donor}->{accession}; 
-		#}
 		my $idx = 0;
-		if (defined($biorep)) {
+		if ( defined($biorep) && defined($pd_json->{replicates}->[$biorep-1]) ) {
 		    $idx = $biorep-1;
 		}
 		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
@@ -615,7 +610,6 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			   $file_json->{status},
 			   $result{dataset_type}, $result{biosample_term_name},
 			   $result{biosample_type},
-			   #join(',', @bs_acc),
 			   $bs_acc,
 			   $result{assay_term_name},
 			   &nopath($result{target}), $result{status},
