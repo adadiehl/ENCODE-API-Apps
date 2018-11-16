@@ -152,6 +152,9 @@ OPTIONS:
     elements, thus hash/array elements nested within another array are not
     available.
 
+--random <N>
+    Select <N> results at random.
+
 --help
     Display this message
 
@@ -255,6 +258,7 @@ my $check_exists = 0;
 my $use_wget = 0;
 my $filter_json_str;
 my $debug = 0;
+my $n_rand = 0;
 
 GetOptions (
     "help" => \$help,
@@ -273,6 +277,7 @@ GetOptions (
     "check-exists" => \$check_exists,
     "use-wget" => \$use_wget,
     "filter-json=s" => \$filter_json_str,
+    "random=i" => \$n_rand,
     "debug" => \$debug
     );
 
@@ -450,7 +455,27 @@ my @metadata;   # To hold metadata for the files we will download
 my $n_files = 0;
 my $n_results = 0;
 my $ds = 1;
+
+my %idx;
+if ($n_rand > 0) {
+    for (my $i = 0; $i < $n_rand; $i++) {
+	my $m = int(rand(${$json}{total}));
+	while (exists($idx{$m})) {
+	    $m = int(rand(${$json}{total}));
+	}
+	$idx{$m} = 1;
+    }
+}
+
+
+my $i = 0;
 foreach my $row (@{${$json}{'@graph'}}) {
+
+    if ($n_rand > 0) {
+	if (!exists($idx{$i++})) {
+	    next;
+	}
+    }
 
     # Each row of the array contains a hash reference to a search result.
     # Make a copy of the hash for convenience.
@@ -459,7 +484,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
     if ($download || $file_list) {
 	# If we are downloading data files, use a file-centric process and
 	# metadata format.
-	print STDERR "Processing files for result $ds...\n";
+	my $rec = $ds;
+	if ($n_rand > 0) {
+	    $rec = $i;
+	}
+	print STDERR "Processing files for result $rec...\n";
 	$ds++;
 	
 	my @files = @{$result{files}};
