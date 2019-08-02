@@ -810,7 +810,13 @@ sub download_file {
 	return 1;
     }
 
-    my $url = "https://www.encodeproject.org" . ${$json}{href};
+    my $url;
+    # Use S3 if possible.
+    if (exists(${json}{s3_uri})) {
+	$url = ${json}{s3_uri};
+    } else {
+	$url = "https://www.encodeproject.org" . ${$json}{href};
+    }
     print STDERR "Found a matching record at $url. Retrieving data...\n";
 
     if ($use_wget) {
