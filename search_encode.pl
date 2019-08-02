@@ -152,6 +152,9 @@ OPTIONS:
     elements, thus hash/array elements nested within another array are not
     available.
 
+--match-all
+    Used with --filter-json, only return records matching all filters.
+
 --random <N>
     Select <N> results at random.
 
@@ -257,6 +260,7 @@ my $by_biosample = 0;
 my $check_exists = 0;
 my $use_wget = 0;
 my $filter_json_str;
+my $match_all = 0;
 my $debug = 0;
 my $n_rand = 0;
 
@@ -277,6 +281,7 @@ GetOptions (
     "check-exists" => \$check_exists,
     "use-wget" => \$use_wget,
     "filter-json=s" => \$filter_json_str,
+    "match-all" => \$match_all,
     "random=i" => \$n_rand,
     "debug" => \$debug
     );
@@ -344,7 +349,11 @@ if (defined($filter_json_str)) {
     my @tmp = split /,/, $filter_json_str;
     foreach my $term (@tmp) {
 	my @tmp2 = split /=/, $term;
-	$json_filter{$tmp2[0]} = $tmp2[1];
+	if (exists($json_filter{$tmp2[0]})) {
+	    push @{$json_filter{$tmp2[0]}}, $tmp2[1];
+	} else {
+	    $json_filter{$tmp2[0]} = [$tmp2[1]];
+	}
     }
 }
 
@@ -567,40 +576,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 
 	    # If we have other terms to check for in the json data, check them
 	    if (%json_filter && $use_rec) {
-		foreach my $key (keys(%json_filter)) {
-		    my @tmp = split /\./, $key;
-		    
-		    my $tmp_json = $file_json;
-		    if ($#tmp > 0) {
-			for (my $j = 0; $j < $#tmp; $j++) {
-			    if (exists($file_json->{$tmp[$j]})) {
-				$tmp_json = $file_json->{$tmp[$j]};
-			    }
-			}
-		    }
-		    
-		    if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
-			# If the target attribute is an array, look for any match
-			# to the query term in the array.
-			$use_rec = 0;
-			foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
-			    if ($debug) {
-				print STDERR "$attr, $json_filter{$key}\n";
-			    }
-			    if ($attr eq $json_filter{$key}) {
-				$use_rec = 1;
-			    } 
-			}
-		    } else {			
-			if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
-			    $use_rec = 0;
-			}
-		    }	   
-		    if (!exists($tmp_json->{$tmp[$#tmp]})) {
-			$use_rec = 0;
-			print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
-		    }
-		}
+		$use_rec = &filter_json(\%json_filter, $file_json, $match_all);
 	    }
 	    
 	    if ($use_rec) {
@@ -630,16 +606,18 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		    $idx = $biorep-1;
 		}
 		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
-		    
-		my @row = (&nopath($file_json->{href}),
-			   $file_json->{accession}, $file_json->{output_type},
+
+		my $biosample_ontology = get_biosample_ontology($mech, $result{biosample_ontology});
+		my @row = (&get_filename($file_json),
+			   $file_json->{accession},
+			   $file_json->{output_type},
 			   $biorep,
 			   $trep,
 			   $file_json->{assembly},
 			   $file_json->{status},
 			   $result{dataset_type},
-			   $result->{biosample_ontology}->{term_name},
-			   $result->{biosample_ontology}->{classification},
+			   $biosample_ontology->{term_name},
+			   $biosample_ontology->{classification},
 			   $bs_acc,
 			   $result{assay_term_name},
 			   &nopath($result{target}),
@@ -798,13 +776,7 @@ sub build_write_path {
 sub download_file {
     # Given a file record, download the file from the ENCODE repository and
     # verify the MD5 checksum.
-    my $mech = $_[0];
-    my $json = $_[1];
-    my $download_path = $_[2];
-    my $out_root = $_[3];
-    my $check_exists = $_[4];
-    my $use_wget = $_[5];
-
+    my ($mech, $json, $download_path, $out_root, $check_exists, $use_wget) = @_;
 
     my @file_parts = split /\//, ${$json}{href};
     my $outfile = build_write_path($download_path, $out_root, [$file_parts[$#file_parts]]);
@@ -829,7 +801,9 @@ sub download_file {
     if ($use_wget) {
 	print STDERR "Retrieving file with wget...\n";
 	`wget $url`;
-	`mv $file_parts[$#file_parts] $outfile`;
+	if ($file_parts[$#file_parts] ne $outfile) {
+	    `mv $file_parts[$#file_parts] $outfile`;
+	}
 	return 0;
     }
 
@@ -940,4 +914,82 @@ sub get_biosample {
     
     print STDERR "Using \"$biosample\" as biosample term name.\n\n";
     return $biosample;
+}
+
+sub get_biosample_ontology {
+    my ($mech, $search_str) = @_;
+    my $URL = 'http://www.encodeproject.org' . $search_str . '?format=json';
+
+    my $json = &get_json($mech, $URL);
+
+    if ( ${$json}{error_status} ) {
+        return undef;
+    }
+
+    return $json;
+}
+
+sub get_filename {
+    my ($file_json) = @_;
+    if (exists($file_json->{s3_uri})) {
+	my @tmp = split "/", $file_json->{s3_uri};
+	return $tmp[$#tmp];
+    }
+    return &nopath($file_json->{href});
+}
+
+sub filter_json {
+    my ($json_filter, $file_json, $match_all) = @_;
+
+    foreach my $key (keys(%$json_filter)) {
+	my @tmp = split /\./, $key;
+	my $query_field = $tmp[$#tmp];
+	my $query_terms = $json_filter->{$key};
+	
+	my $target_json = $file_json;
+	if ($#tmp > 0) {
+	    for (my $j = 0; $j < $#tmp; $j++) {
+		if (exists($file_json->{$tmp[$j]})) {
+		    $target_json = $file_json->{$tmp[$j]};
+		}
+	    }
+	}
+	
+	if (!exists($target_json->{$query_field})) {
+	    print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file_json->{accession})!\n";
+	    return 0;
+	}
+
+	for (my $i = 0; $i <= $#{$query_terms}; $i++) {
+	    my $found = &filter_json_term($target_json, $query_field, $query_terms->[$i]);
+	    if ($found && (!$match_all || $i == $#{$query_terms})) {
+		return 1;
+	    } elsif ($match_all) {
+		return 0;
+	    }
+	}
+    }
+    return 0;
+}
+
+sub filter_json_term {
+    my ($target_json, $query_field, $query_term) = @_;
+
+    #print STDERR $target_json->{$query_field}, "\n";
+    #print STDERR $query_field, "\t", $query_term, "\n";
+    if (ref $target_json->{$query_field} eq "ARRAY") {
+	# If the target attribute is an array, look for any match                           
+	# to the query term in the array.                                                   
+	foreach my $attr (@{$target_json->{$query_field}}) {
+	    #print STDERR "$attr, $query_term\n";
+	    if ($attr eq $query_term) {
+		return 1;
+	    }
+	}
+    } else {
+	if ($target_json->{$query_field} eq $query_term) {
+	    return 1;
+	}
+    }
+    return 0;
 }
