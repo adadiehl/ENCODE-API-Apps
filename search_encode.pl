@@ -637,13 +637,18 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			   $trep,
 			   $file_json->{assembly},
 			   $file_json->{status},
-			   $result{dataset_type}, $result{biosample_term_name},
-			   $result{biosample_type},
+			   $result{dataset_type},
+			   $result{biosample_ontology}{term_name},
+			   $result{biosample_ontology}{classification},
 			   $bs_acc,
 			   $result{assay_term_name},
-			   &nopath($result{target}), $result{status},
-			   $result{date_released}, &nopath($result{lab}),
-			   $result{accession}, $controls_str, $documents_str,
+			   &nopath($result{target}),
+			   $result{status},
+			   $result{date_released}, 
+			   &nopath($result{lab}),
+			   $result{accession}, 
+			   $controls_str,
+			   $documents_str,
 			   "https://www.encodeproject.org" . $file_json->{href},
 		    );
 
@@ -813,7 +818,9 @@ sub download_file {
     my $url;
     # Use S3 if possible.
     if (exists(${$json}{s3_uri})) {
-	$url = ${$json}{s3_uri};
+	# Build an https download URL from the S3 URL
+	my @parts = split /\//, ${$json}{s3_uri};
+	$url = "https://" . $parts[2] . ".s3.amazonaws.com/" . join "/", @parts[3..$#parts];
     } else {
 	$url = "https://www.encodeproject.org" . ${$json}{href};
     }
