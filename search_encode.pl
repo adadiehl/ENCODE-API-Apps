@@ -75,6 +75,11 @@ OPTIONS:
     specified with the --file-type flag. Currently only tested for results
     of type \"experiment\". May behave unpredictably for other types!
 
+--file-list
+    Instead of downloading files, print a table of metadata for files
+    matching the given criteria. Compatible with the same options as
+    --download.
+
 --output-type <type_1,...,type_n>
     Used with --download, limits results to files of given type(s).
     Multiple types may be supplied as a comma-separated list. File types are
@@ -146,6 +151,9 @@ OPTIONS:
     the query value. It is currently only possible to search within named
     elements, thus hash/array elements nested within another array are not
     available.
+
+--random <N>
+    Select <N> results at random.
 
 --help
     Display this message
@@ -235,6 +243,7 @@ my $params = $ARGV[1];
 
 my $help = 0;
 my $download = 0;
+my $file_list = 0;
 my $output_type_str;
 my $file_format_str;
 my $file_format_type_str;
@@ -249,10 +258,12 @@ my $check_exists = 0;
 my $use_wget = 0;
 my $filter_json_str;
 my $debug = 0;
+my $n_rand = 0;
 
 GetOptions (
     "help" => \$help,
     "download" => \$download,
+    "file-list" => \$file_list,
     "output-type=s" => \$output_type_str,
     "file-format=s" => \$file_format_str,
     "file-format-type=s" => \$file_format_type_str,
@@ -266,6 +277,7 @@ GetOptions (
     "check-exists" => \$check_exists,
     "use-wget" => \$use_wget,
     "filter-json=s" => \$filter_json_str,
+    "random=i" => \$n_rand,
     "debug" => \$debug
     );
 
@@ -275,12 +287,12 @@ if ($help || $#ARGV+1 < 2) {
 }
 
 # Check for other options and do some sanity checks...
-if (defined($output_type_str) && !$download) {
-    die "\n--output-type only works with --download. Try --help.\n";
+if (defined($output_type_str) && !($download || $file_list) ) {
+    die "\n--output-type only works with --download or --file-list. Try --help.\n";
 }
-if (defined($file_format_type_str) && !defined($file_format_str)) {
-    die "\n--file-format-type requires --file-format. Try --help.\n";
-}
+#if (defined($file_format_type_str) && !defined($file_format_str)) {
+#    die "\n--file-format-type requires --file-format. Try --help.\n";
+#}
 if (defined($download_path) && !$download) {
     die "\n--download-path requires --download. Try --help\n";
 }
@@ -299,6 +311,9 @@ if ($use_wget) {
 	die "Cannot find wget on your system. Please try again without --use-wget.\n";
     }
 }
+if (defined($filter_json_str) && !($download || $file_list)) {
+    print STDERR "\nWarning: --filter_json_str has no effect without --download or --file-list.\n";
+}
 
 # Check the download path for a trailing slash and add one if needed
 if (defined($download_path)) {
@@ -316,17 +331,11 @@ if (defined($output_type_str)) {
 my @file_formats;
 if (defined($file_format_str)) {
     @file_formats = split /,/, $file_format_str;
-    if ($#file_formats != $#output_types) {
-        die "\n--file-format and --output-type must have the same number of fields!\n";
-    }
 }
 
 my @file_format_types;
 if (defined($file_format_type_str)) {
     @file_format_types = split /,/, $file_format_type_str;
-    if ($#file_format_types != $#output_types) {
-        die "\n--file-format-type and --output-type must have the same number of fields!\n";
-    }
 }
 
 # Process the filter json string
@@ -410,21 +419,77 @@ if ( ${$json}{error_status} ) {
 # Stage Two: Find the files we need within the search results.
 # Individual search results are within the embedded array @graph.
 
+# Prepare the metadata file header
+my @header;
+if ($download || $file_list) {
+    # File-centric header                                                                                                                                          
+    @header = ("file", "accession", "output_type", "biological_replicate",
+               "technical_replicate", "assembly", "status", "dataset_type", "biosample_term_name",
+               "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
+               "date_released", "lab", "parent accession", "possible_controls",
+               "documents", "href");
+} else {
+    # Experiment-centric header                                                                                                                                    
+    @header = ("accession", "dataset_type", "biosample_term_name",
+               "biosample_type", "assay_term_name", "target", "status",
+               "date_released", "lab", "files", "possible_controls",
+               "documents");
+}
+
+# Open a stream to the metadata file
+my $DATA;
+my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
+open $DATA, '>', $outfile;
+
+# Print the metadata file header, if requested.
+unless ($no_header) {
+    &print_array(\@header, "\t", $DATA);
+}
+
+
 #my $mech_size = total_size($mech);
 #print STDERR "Size of $mech: $mech_size\n";
 
 my @downloads;  # To hold pointers to the files we will download
 my @metadata;   # To hold metadata for the files we will download
 my $n_files = 0;
+my $n_results = 0;
+my $ds = 1;
+
+my %idx;
+if ($n_rand > 0) {
+    for (my $i = 0; $i < $n_rand; $i++) {
+	my $m = int(rand(${$json}{total}));
+	while (exists($idx{$m})) {
+	    $m = int(rand(${$json}{total}));
+	}
+	$idx{$m} = 1;
+    }
+}
+
+
+my $i = 0;
 foreach my $row (@{${$json}{'@graph'}}) {
+
+    if ($n_rand > 0) {
+	if (!exists($idx{$i++})) {
+	    next;
+	}
+    }
 
     # Each row of the array contains a hash reference to a search result.
     # Make a copy of the hash for convenience.
     my %result = %{$row};
 
-    if ($download) {
+    if ($download || $file_list) {
 	# If we are downloading data files, use a file-centric process and
 	# metadata format.
+	my $rec = $ds;
+	if ($n_rand > 0) {
+	    $rec = $i;
+	}
+	print STDERR "Processing files for result $rec...\n";
+	$ds++;
 	
 	my @files = @{$result{files}};
 	foreach my $file (@files) {
@@ -433,105 +498,167 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # records, retrieve these as separate queries against the
 	    # database.
 	    my $url = 'http://www.encodeproject.org/' . $file . '?format=json';
+	    #print STDERR "$url\n";
 	    
 	    # Get the JSON from the url
 	    my $file_json = &get_json($mech, $url);
+	    if (defined($file_json->{error_status}) &&
+		$file_json->{error_status} == 1) {
+		print STDERR "JSON retrieval error for $url: $file_json->{notification}.\n";
+		next;
+	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
 	    my $use_rec = 1; # Download all files by default
-	    for (my $i = 0; $i <= $#output_types ; $i++) {
 		
-		# If output_type does not match, reject the file
-		if (@output_types) {
-		    if (${$file_json}{output_type} ne $output_types[$i]) {
+	    # If output_type does not match, reject the file
+	    if (@output_types) {
+		for (my $i = 0; $i <= $#output_types ; $i++) {
+		    if (!exists(${$file_json}{output_type})) {
+			$use_rec = 0;
+			last;
+		    } elsif (${$file_json}{output_type} eq $output_types[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "output type ${$file_json}{output_type} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
-		
-		# If file_format does not match, reject the file
-		if (@file_formats) {
-		    if (${$file_json}{file_format} ne $file_formats[$i]) {
+	    }
+	    
+	    # If file_format does not match, reject the file
+	    if (@file_formats && $use_rec) {
+		for (my $i = 0; $i <= $#file_formats ; $i++) {
+		    if (!exists(${$file_json}{file_format})) {
+			$use_rec = 0;
+			last;
+		    } elsif (${$file_json}{file_format} eq $file_formats[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "file format ${$file_json}{file_format} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
+	    }
 		
-		# If file_format_type does not match, reject the file
-		if (@file_format_types && $use_rec) {		    
-		    if (!exists(${$file_json}{file_format_type}) ||
-			${$file_json}{file_format_type} ne $file_format_types[$i]) {
+	    # If file_format_type does not match, reject the file
+	    if (@file_format_types && $use_rec) {
+		for (my $i = 0; $i <= $#file_format_types ; $i++) {
+		    if (!exists(${$file_json}{file_format_type})) {
+			$use_rec = 0;
+                        last;
+		    } elsif (${$file_json}{file_format_type} eq $file_format_types[$i]) {
+			$use_rec = 1;
+			last;
+		    } else {
 			if ($debug) {
 			    print STDERR "file format type ${$file_json}{file_format_type} does not match\n";
 			}
 			$use_rec = 0;
-			last;
 		    }
 		}
+	    }
 
-		# If we have other terms to check for in the json data, check them
-		if (%json_filter) {
-		    foreach my $key (keys(%json_filter)) {
-			my @tmp = split /\./, $key;
-		
-			my $tmp_json = $file_json;
-			if ($#tmp > 0) {
-			    for (my $j = 0; $j < $#tmp; $j++) {
-				if (exists($file_json->{$tmp[$j]})) {
-				    $tmp_json = $file_json->{$tmp[$j]};
-				}
+	    # If we have other terms to check for in the json data, check them
+	    if (%json_filter && $use_rec) {
+		foreach my $key (keys(%json_filter)) {
+		    my @tmp = split /\./, $key;
+		    
+		    my $tmp_json = $file_json;
+		    if ($#tmp > 0) {
+			for (my $j = 0; $j < $#tmp; $j++) {
+			    if (exists($file_json->{$tmp[$j]})) {
+				$tmp_json = $file_json->{$tmp[$j]};
 			    }
 			}
-
-			if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
-			    # If the target attribute is an array, look for any match
-			    # to the query term in the array.
-			    $use_rec = 0;
-			    foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
-				if ($debug) {
-				    print STDERR "$attr, $json_filter{$key}\n";
-				}
-				if ($attr eq $json_filter{$key}) {
-				    $use_rec = 1;
-				} 
+		    }
+		    
+		    if (ref $tmp_json->{$tmp[$#tmp]} eq "ARRAY") {
+			# If the target attribute is an array, look for any match
+			# to the query term in the array.
+			$use_rec = 0;
+			foreach my $attr (@{$tmp_json->{$tmp[$#tmp]}}) {
+			    if ($debug) {
+				print STDERR "$attr, $json_filter{$key}\n";
 			    }
-			} else {			
-			    if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
-				$use_rec = 0;
-			    }
-			}	   
-			if (!exists($tmp_json->{$tmp[$#tmp]})) {
-			    $use_rec = 0;
-			    print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
+			    if ($attr eq $json_filter{$key}) {
+				$use_rec = 1;
+			    } 
 			}
+		    } else {			
+			if ($tmp_json->{$tmp[$#tmp]} ne $json_filter{$key}) {
+			    $use_rec = 0;
+			}
+		    }	   
+		    if (!exists($tmp_json->{$tmp[$#tmp]})) {
+			$use_rec = 0;
+			print STDERR "WARNING: Specified JSON attribute $key does not exist in file JSON. File will not be downloaded (accession = $file)!\n";
 		    }
 		}
 	    }
 	    
 	    if ($use_rec) {
 		# Store a pointer to the file_json in our array
-		push @downloads, $file_json;
+		if ($download) {
+		    push @downloads, $file_json;
+		}
 		
 		# Build a row for the metadata table
 		my $controls_str = join ",", &nopaths($result{possible_controls});
 		my $documents_str = join ",", &nopaths($result{documents});
-		
-		my @row = (&nopath(${$file_json}{href}),
-			   ${$file_json}{accession}, ${$file_json}{output_type},
-			   ${${$file_json}{replicate}}{biological_replicate_number},
-			   ${${$file_json}{replicate}}{technical_replicate_number},
+
+		my $biorep = $file_json->{replicate}->{biological_replicate_number};
+		if (!defined($biorep)) {
+		    $biorep = $file_json->{biological_replicates}->[0];
+		}
+		my $trep = $file_json->{replicate}->{technical_replicate_number};
+		if (!defined($trep)) {
+		    $trep = $file_json->{technical_replicates}->[0];
+		}
+
+		my $url = 'http://www.encodeproject.org' . $file_json->{dataset} . '?format=JSON';
+		#print STDERR "$url\n";
+		my $pd_json = get_json($mech, $url);
+		my $idx = 0;
+		if ( defined($biorep) && defined($pd_json->{replicates}->[$biorep-1]) ) {
+		    $idx = $biorep-1;
+		}
+		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
+		    
+		my @row = (&nopath($file_json->{href}),
+			   $file_json->{accession}, $file_json->{output_type},
+			   $biorep,
+			   $trep,
+			   $file_json->{assembly},
+			   $file_json->{status},
 			   $result{dataset_type}, $result{biosample_term_name},
-			   $result{biosample_type}, $result{assay_term_name},
+			   $result{biosample_type},
+			   $bs_acc,
+			   $result{assay_term_name},
 			   &nopath($result{target}), $result{status},
 			   $result{date_released}, &nopath($result{lab}),
-			   $result{accession}, $controls_str, $documents_str);
-		push @metadata, \@row;
+			   $result{accession}, $controls_str, $documents_str,
+			   "https://www.encodeproject.org" . $file_json->{href},
+		    );
+
+		# Correct any undefined metadata values
+		for (my $i = 0; $i <= $#row; $i++) {
+		    if (!defined($row[$i])) {
+			$row[$i] = '.';
+		    }
+		}
+
+		# Print a metadata row
+		&print_array(\@row, "\t", $DATA);
+
+		$n_results++
+		
 	    } else {
 		# Should  not be necessary, but just to be sure there's no json
 		# hanging around for files we're not using.
@@ -551,44 +678,23 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		   $result{status}, $result{date_released},
 		   &nopath($result{lab}), $files_str, $controls_str,
 		   $documents_str);
-	push @metadata, \@row;
+	for (my $i = 0; $i <= $#row; $i++) {
+	    if (!defined($row[$i])) {
+		$row[$i] = '.';
+	    }
+	}
+	print_array(\@row, "\t", $DATA);
+	$n_results++
     }
 }
+
+print STDERR "Wrote $n_results rows of metadata to \"$outfile\"....\n";
 
 #$mech_size = total_size($mech);
 #print STDERR "Size of $mech: $mech_size\n";
 
 #######################
-# Stage 3: Download the data and metadata. Optionally save the file json.
-
-# Number of files/records
-my $n_results = $#metadata+1;
-
-# Set up the metadata file handle
-my $DATA;
-my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
-open $DATA, '>', $outfile;
-
-# Prepare and print the header
-my @header;
-if ($download) {
-    # File-centric header
-    @header = ("file", "accession", "output_type", "biological_replicate",
-	       "technical_replicate", "dataset_type", "biosample_term_name",
-	       "biosample_type", "assay_term_name", "target", "status",
-	       "date_released", "lab", "parent accession", "possible_controls",
-	       "documents");
-} else {
-    # Experiment-centric header
-    @header = ("accession", "dataset_type", "biosample_term_name",
-	       "biosample_type", "assay_term_name", "target", "status",
-	       "date_released", "lab", "files", "possible_controls",
-	       "documents");
-}
-
-unless ($no_header) {
-    &print_array(\@header, "\t", $DATA);
-}
+# Stage 3: Download data. Optionally save the file json.
 
 # Download the files
 if ($download) {
@@ -603,18 +709,6 @@ foreach my $file_json (@downloads) {
 #    print STDERR "Size of $mech: $mech_size\n";
 }
 
-# Print the metadata
-print STDERR "Writing $n_results rows of metadata to \"$outfile\"...\n";
-foreach my $row (@metadata) {
-    # Check for any undefined values
-    for (my $i = 0; $i <= $#{$row}; $i++) {
-	if (!defined(${$row}[$i])) {
-	    ${$row}[$i] = '.';
-	}
-    }
-    &print_array($row, "\t", $DATA);
-}
-
 close $DATA;
 
 print STDERR "Done!\n";
@@ -627,6 +721,8 @@ sub get_json {
     my $mech = $_[0];
     my $url = $_[1];
 
+    my $max_tries = 10; # TO-DO: make this configurable
+
     my $status = eval {
 	$mech->get($url);
 	1
@@ -636,12 +732,27 @@ sub get_json {
     if (!$status) {
 	# For some reason, the portal sometimes returns an error when there
 	# are no results. In these cases, use a dummy json to notify the user.
-	$content = '{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }';
-    } else {
+	return decode_json('{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }');
+    } else {	
 	$content = $mech->content;
     }
 
-    my $json = decode_json($content);
+    my $json;
+    eval { $json = decode_json($content); };
+    
+    # Retry if there is an error.
+    my $tries = 2;
+    while ($@ && $tries <= $max_tries) {
+	if ($debug) {
+	    print STDERR "Retrying json retrieval: attempt $tries of $max_tries...\n";
+	}
+	$tries++;
+	$content = $mech->content;
+	eval { $json = decode_json($content); };
+    }
+    if ($@) {
+	return decode_json('{ "notification": "Max tries reached. Aborting.", "total": 0, "error_status": 1 }');
+    }
     return $json;
 }
 
