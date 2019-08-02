@@ -812,8 +812,8 @@ sub download_file {
 
     my $url;
     # Use S3 if possible.
-    if (exists(${json}{s3_uri})) {
-	$url = ${json}{s3_uri};
+    if (exists(${$json}{s3_uri})) {
+	$url = ${$json}{s3_uri};
     } else {
 	$url = "https://www.encodeproject.org" . ${$json}{href};
     }
