@@ -152,8 +152,15 @@ OPTIONS:
     elements, thus hash/array elements nested within another array are not
     available.
 
+--exclude-json \"key1=val1,...,keyN=valN\"
+    Like --filter-json, except that files with any matching key-value pairs
+    in their json records will be excluded from results.
+
 --match-all
     Used with --filter-json, only return records matching all filters.
+
+--match-all-excl
+    Used with --exclude-json, only exclude records matching all filters.
 
 --random <N>
     Select <N> results at random.
@@ -260,7 +267,9 @@ my $by_biosample = 0;
 my $check_exists = 0;
 my $use_wget = 0;
 my $filter_json_str;
+my $excl_json_str;
 my $match_all = 0;
+my $match_all_excl = 0;
 my $debug = 0;
 my $n_rand = 0;
 
@@ -281,7 +290,9 @@ GetOptions (
     "check-exists" => \$check_exists,
     "use-wget" => \$use_wget,
     "filter-json=s" => \$filter_json_str,
+    "exclude-json=s" => \$excl_json_str,
     "match-all" => \$match_all,
+    "match-all-excl" => \$match_all_excl,
     "random=i" => \$n_rand,
     "debug" => \$debug
     );
@@ -317,8 +328,12 @@ if ($use_wget) {
     }
 }
 if (defined($filter_json_str) && !($download || $file_list)) {
-    print STDERR "\nWarning: --filter_json_str has no effect without --download or --file-list.\n";
+    print STDERR "\nWarning: --filter-json has no effect without --download or --file-list.\n";
 }
+if (defined($excl_json_str) && !($download || $file_list)) {
+    print STDERR "\nWarning: --exclude-json has no effect without --download or --file-list.\n";
+}
+
 
 # Check the download path for a trailing slash and add one if needed
 if (defined($download_path)) {
@@ -354,6 +369,19 @@ if (defined($filter_json_str)) {
 	} else {
 	    $json_filter{$tmp2[0]} = [$tmp2[1]];
 	}
+    }
+}
+
+my %json_exclude;
+if (defined($excl_json_str)) {
+    my @tmp = split /,/, $excl_json_str;
+    foreach my $term (@tmp) {
+        my @tmp2 = split /=/, $term;
+        if (exists($json_exclude{$tmp2[0]})) {
+            push @{$json_exclude{$tmp2[0]}}, $tmp2[1];
+        } else {
+            $json_exclude{$tmp2[0]} = [$tmp2[1]];
+        }
     }
 }
 
@@ -578,6 +606,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    if (%json_filter && $use_rec) {
 		$use_rec = &filter_json(\%json_filter, $file_json, $match_all);
 	    }
+
+	    # If we have any terms to exclude, check for them
+	    if (%json_exclude && $use_rec) {
+		$use_rec = &exclude_json(\%json_exclude, $file_json, $match_all_excl);
+            }
 	    
 	    if ($use_rec) {
 		# Store a pointer to the file_json in our array
@@ -964,13 +997,54 @@ sub filter_json {
 	    my $found = &filter_json_term($target_json, $query_field, $query_terms->[$i]);
 	    if ($found && (!$match_all || $i == $#{$query_terms})) {
 		return 1;
-	    } elsif ($match_all) {
+	    } elsif (!$found && $match_all) {
 		return 0;
 	    }
 	}
     }
     return 0;
 }
+
+sub exclude_json {
+    my ($json_exclude, $file_json, $match_all) = @_;
+
+    foreach my $key (keys(%$json_exclude)) {
+	my @tmp = split /\./, $key;
+        my $query_field = $tmp[$#tmp];
+        my $query_terms = $json_exclude->{$key};
+
+        my $target_json = $file_json;
+        if ($#tmp > 0) {
+            for (my $j = 0; $j < $#tmp; $j++) {
+                if (exists($file_json->{$tmp[$j]})) {
+                    $target_json = $file_json->{$tmp[$j]};
+                }
+            }
+        }
+
+        if (!exists($target_json->{$query_field})) {
+	    # If the given json key does not exist, accept the file.
+            return 1;
+        }
+
+	my $n_found = 0;
+        for (my $i = 0; $i <= $#{$query_terms}; $i++) {
+            my $found = &filter_json_term($target_json, $query_field, $query_terms->[$i]);
+            if ($found) {
+		if (!$match_all) {
+		    return 0;
+		}
+		# Handle the match_all case by comparing number
+		# of terms matched to number of query terms.
+		if (++$n_found == $#{$query_terms}) {
+		    return 0;
+		}
+            }
+        }
+    }
+    return 1;
+}
+
 
 sub filter_json_term {
     my ($target_json, $query_field, $query_term) = @_;
