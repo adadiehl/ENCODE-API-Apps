@@ -487,9 +487,9 @@ if ($download || $file_list) {
                "date_released", "lab", "parent accession", "possible_controls",
                "documents", "href");
 } elsif ($quality_data) {
-    @header = ("accession", "dataset_type", "biosample_term_name",
-               "biosample_type", "assay_term_name", "target", "status",
-               "date_released", "lab", "files", "reads", "pctMapped",
+    @header = ("experiment", "biosample_term_name",
+               "biosample_type", "assay_term_name", "target", "file", "status",
+               "assembly", "date_released", "lab", "files", "reads", "pctMapped",
 	       "pctDup", "NSC", "RSC", "ccFragLen", "ccPhantomPeak",
 	       "ccMin", "PBC1", "PBC2", "NRF");
 } else {
@@ -553,7 +553,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	print STDERR "Processing files for result $rec...\n";
 	$ds++;
 
-	my @alignment_recs; # Alignment file json objects from which to retrieve quality data
+	my @quality_recs; # Json objects from which to retrieve quality data
 
 	my $has_rec = 0; # Does experiment have a useable record?
 	my @files = @{$row->{files}};
@@ -571,7 +571,8 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # an alignment file that matches our assembly criteria.
 	     if ($file_json->{output_type} =~ m/alignments/ &&
 		 $file_json->{output_type} !~ m/unfiltered/) {
-		 push @alignment_recs, $file_json;
+		 push @quality_recs, {exp_json => $row,
+				      file_json => $file_json};
 	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
@@ -716,14 +717,16 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	}
 	
 	if ($has_rec && $quality_data) {
-	    my $res = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
+	    my $res = get_quality_metrics(\@quality_recs, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
 	    #print STDERR "Line 699: success ", $res->{success}, ", meta ", $res->{meta},"\n";
 	    if (!$res->{success}) {
 		print STDERR "Metadata retrieval failed for $row->{accession}: $res->{message}\n";
 		next;
 	    }
-	    &print_array($res->{meta}, "\t", $DATA);
-	    $n_results++;
+	    foreach my $meta (@{$res->{res}}) {
+		&print_array($meta, "\t", $DATA);
+		$n_results++;
+	    }
 	}
 	
     } else { # if (!$download)
@@ -785,7 +788,6 @@ print STDERR "Done!\n";
 sub get_json {
     # Retrieve JSON data from a URL and return it as a data structure.
     my ($mech, $url, $max_tries) = @_;
-
     if (!defined($max_tries)) {
 	$max_tries = 10;
     }
@@ -1138,13 +1140,10 @@ sub exclude_json {
 sub filter_json_term {
     my ($target_json, $query_field, $query_term) = @_;
 
-    #print STDERR $target_json->{$query_field}, "\n";
-    #print STDERR $query_field, "\t", $query_term, "\n";
     if (ref $target_json->{$query_field} eq "ARRAY") {
 	# If the target attribute is an array, look for any match                           
 	# to the query term in the array.                                                   
 	foreach my $attr (@{$target_json->{$query_field}}) {
-	    #print STDERR "$attr, $query_term\n";
 	    if ($attr eq $query_term) {
 		return 1;
 	    }
@@ -1171,30 +1170,17 @@ sub get_file_json {
 
 sub get_quality_metrics {
     # Get quality metrics from an experiment
-    my ($row, $params, $json_filter, $json_exclude, $mech, $assemblies) = @_;
+    my ($quality_recs, $params, $json_filter, $json_exclude, $mech, $assemblies) = @_;
     
     # Find the alignment file for the first/chosen assembly.
     my $success = 0;
-    my $message = "No matching file";
-    foreach my $file (@{$row->{files}}) {
-	#print STDERR "Line 1176: ", $file, "\n";
-	# Get json record for the file from ENCODE
-	my $file_json = get_file_json($file, $mech);
-	if (defined($file_json->{error_status}) &&
-	    $file_json->{error_status} == 1) {
-	    print STDERR "JSON retrieval error for $file: $file_json->{notification}.\n";
-	    $message = "Max number of tries reached.";
-	    next;
-	}
+    my $message = "No matching file(s)";
+    my @res;
 
-	# Check the file ouput_type -- we only want filtered alignments
-	if ($file_json->{output_type} =~ m/alignments/ &&
-	    $file_json->{output_type} !~ m/unfiltered/) {
-	    $message = "Success!";
-	} else {
-	    next;
-	}
-
+    foreach my $rec (@{$quality_recs}) {
+	my $row = $rec->{exp_json};
+	my $file_json = $rec->{file_json};
+	
 	# Check the assembly
 	my $use_rec = 0;
 	if (defined($assemblies->{assembly})) {	    
@@ -1220,18 +1206,28 @@ sub get_quality_metrics {
             }
 	}
 
-	#print STDERR "Line 1201: ", $file_json->{accession}, "\n";
-	#print STDERR "Line 1202: ", $file_json->{notes}, "\n";
-	
 	# Get the quality metrics. These are all available in the "notes" field.
 	my $notes_json = decode_json($file_json->{notes});
 
-	my $files_str = join ",", &nopaths($row->{files});
+	# Get biosample data (This is now a nested request in the experiment recs -- how annoying!)
+	my $biosample_ontology = get_json($mech,
+					  join("", "https://encodeproject.org", 
+					       $row->{biosample_ontology}, 
+					       "?format=json")
+	    );
+	if ($biosample_ontology->{error_status}) {
+	    #print STDERR $biosample_ontology->{notification},"\n";
+	    $biosample_ontology->{term_name} = $biosample_ontology->{classification} = ".";
+	}
 
-        my @meta = ($row->{accession}, $row->{dataset_type},
-		    $row->{biosample_term_name}, $row->{biosample_type},
+        my @meta = ($row->{accession},
+		    $biosample_ontology->{term_name},
+		    $biosample_ontology->{classification},
 		    $row->{assay_term_name}, &nopath($row->{target}),
-		    $row->{status}, $row->{date_released},
+		    $file_json->{accession},
+		    $file_json->{status},
+		    $file_json->{assembly},
+		    $row->{date_released},
 		    &nopath($row->{lab}),
 		    $notes_json->{qc}->{qc}->{in_total}[0], 
 		    $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0],
@@ -1250,9 +1246,10 @@ sub get_quality_metrics {
                 $meta[$i] = '.';
             }
         }
-	return {success => 1, message => $message, meta => \@meta};
-    }
-    return {success => 0, message => $message, meta => undef};
+	push @res, \@meta;
+	$success = 1;
+    }        
+    return {success => $success, message => $message, res => \@res};
 }
 
 sub get_assembly_params {
