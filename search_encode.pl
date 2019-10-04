@@ -82,8 +82,9 @@ OPTIONS:
 
 --quality-data
     Compile a table of quality metrics for experiments matching the query,
-    to include read count, % mapped reads, % duplication, NSC, RSC, PBC,
-    and NRF. See definitions of these metrics here:
+    to include read count, % mapped reads, % duplication, NSC, RSC, cc(fragLen),
+    cc(phantomPeak), cc(min), PBC, and NRF. See definitions of these metrics
+    here:
     https://genome.ucsc.edu/ENCODE/qualityMetrics.html#definitions
     and in the ENCODE ChIP-seq guidelines:
     Landt, S. G., et al. (2012). ChIP-seq guidelines and practices of the
@@ -412,12 +413,6 @@ my $mech = WWW::Mechanize->new(
     autocheck => 0
     );
 
-####################
-# Stage 1: Build the query URL and run the primary query against the ENCODE
-# Portal.
-
-my $URL;
-
 # Handle biosample-based queries with a preliminary query to get the
 # biosample term name based on the search term.
 my $biosample;
@@ -434,8 +429,17 @@ if ($by_biosample) {
     $search_str = uri_escape($search_str);
 }
 
+# Get assembly params for certain types of queries from the URL params,
+# $json_filter, and $json_exclude
+my $assemblies = get_assembly_params($params, \%json_filter, \%json_exclude);
+
+####################
+# Stage 1: Build the query URL and run the primary query against the ENCODE
+# Portal.
+
+
 # Build the query URL from the command line args and parameters
-$URL = 'https://www.encodeproject.org/search/?searchTerm=';
+my $URL = 'https://www.encodeproject.org/search/?searchTerm=';
 $URL .= $search_str;
 $URL .= "&type=";
 $URL .= $rec_type;
@@ -486,7 +490,8 @@ if ($download || $file_list) {
     @header = ("accession", "dataset_type", "biosample_term_name",
                "biosample_type", "assay_term_name", "target", "status",
                "date_released", "lab", "files", "reads", "pctMapped",
-	       "pctDup", "NSC", "RSC", "PBC1", "PBC2", "NRF");
+	       "pctDup", "NSC", "RSC", "ccFragLen", "ccPhantomPeak",
+	       "ccMin", "PBC1", "PBC2", "NRF");
 } else {
     # Experiment-centric header
     @header = ("accession", "dataset_type", "biosample_term_name",
@@ -535,7 +540,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    next;
 	}
     }
- 
+    
     if ($download || $file_list || $quality_data) {
 	# If we are downloading data files, use a file-centric process and
 	# metadata format. Quality data is the outlier here because it will
@@ -548,8 +553,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	print STDERR "Processing files for result $rec...\n";
 	$ds++;
 
+	my @alignment_recs; # Alignment file json objects from which to retrieve quality data
+
 	my $has_rec = 0; # Does experiment have a useable record?
 	my @files = @{$row->{files}};
+	
 	foreach my $file (@files) {
 	    # Get json record for the file from ENCODE
 	    my $file_json = get_file_json($file, $mech);
@@ -557,6 +565,13 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		$file_json->{error_status} == 1) {
 		print STDERR "JSON retrieval error for $file: $file_json->{notification}.\n";
 		next;
+	    }
+
+	    # If we are retrieving quality metrics, check to see if we have
+	    # an alignment file that matches our assembly criteria.
+	     if ($file_json->{output_type} =~ m/alignments/ &&
+		 $file_json->{output_type} !~ m/unfiltered/) {
+		 push @alignment_recs, $file_json;
 	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
@@ -701,7 +716,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	}
 	
 	if ($has_rec && $quality_data) {
-	    my $res = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech);
+	    my $res = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
 	    #print STDERR "Line 699: success ", $res->{success}, ", meta ", $res->{meta},"\n";
 	    if (!$res->{success}) {
 		print STDERR "Metadata retrieval failed for $row->{accession}: $res->{message}\n";
@@ -709,7 +724,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    }
 	    &print_array($res->{meta}, "\t", $DATA);
 	    $n_results++;
-	}	
+	}
 	
     } else { # if (!$download)
 	if ($quality_data) {
@@ -1156,25 +1171,8 @@ sub get_file_json {
 
 sub get_quality_metrics {
     # Get quality metrics from an experiment
-    my ($row, $params, $json_filter, $json_exclude, $mech) = @_;
-
-    # We need to pick an assembly from which to retrieve quality scores.
-    # Check and see if one has been specified (or excluded) in params,
-    # json_filter, or json_exclude. If more than one assembly is included
-    # in the filters, just use the first one supplied (probably should have
-    # a better solution for this!).
-    my $assembly;
-    my $not_assembly;
-    if (exists($json_filter->{assembly})) {
-	$assembly = $json_filter->{assembly}[0];
-    } elsif ($params =~ m/assembly=(\w+)\&*/) {
-	$assembly = $1;
-    } elsif (exists($json_exclude->{assembly})) {
-        $not_assembly =	$json_exclude->{assembly}[0];
-    } else {
-	print STDERR "Warning: no assembly specified. Quality scores for the first alignment file encountered will be used.\n";
-    }
-
+    my ($row, $params, $json_filter, $json_exclude, $mech, $assemblies) = @_;
+    
     # Find the alignment file for the first/chosen assembly.
     my $success = 0;
     my $message = "No matching file";
@@ -1197,13 +1195,27 @@ sub get_quality_metrics {
 	    next;
 	}
 
-	# Check the assembly, if we have one
-	if (defined($assembly)) {
-	    if ($file_json->{assembly} ne $assembly) {
+	# Check the assembly
+	my $use_rec = 0;
+	if (defined($assemblies->{assembly})) {	    
+	    for (my $i = 0; $i <= $#{$assemblies->{assembly}}; $i++) {
+		if ($file_json->{assembly} eq $assemblies->{assembly}->[$i]) {
+		    $use_rec = 1;
+		    last;
+		}
+	    }
+	    if (!$use_rec) {
 		next;
 	    }
-	} elsif (defined($not_assembly)) {
-	    if ($file_json->{assembly} eq $not_assembly) {
+	}
+	if (defined($assemblies->{not_assembly})) {
+	    for	(my $i = 0; $i <= $#{$assemblies->{not_assembly}}; $i++) {
+		if ($file_json->{assembly} eq $assemblies->{not_assembly}->[$i]) {
+		    $use_rec = 0;
+		    last;
+		}
+	    }
+	    if (!$use_rec) {
 		next;
             }
 	}
@@ -1223,9 +1235,12 @@ sub get_quality_metrics {
 		    &nopath($row->{lab}),
 		    $notes_json->{qc}->{qc}->{in_total}[0], 
 		    $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0],
-		    $notes_json->{qc}->{qc_dup}->{percent_duplication},
+		    $notes_json->{qc}->{dup_qc}->{percent_duplication},
 		    $notes_json->{qc}->{xcor_qc}->{phantomPeakCoef},
 		    $notes_json->{qc}->{xcor_qc}->{relPhantomPeakCoef},
+		    $notes_json->{qc}->{xcor_qc}->{corr_estFragLen},
+		    $notes_json->{qc}->{xcor_qc}->{corr_phantomPeak},
+		    $notes_json->{qc}->{xcor_qc}->{min_corr},
 		    $notes_json->{qc}->{pbc_qc}->{PBC1},
 		    $notes_json->{qc}->{pbc_qc}->{PBC2},
 		    $notes_json->{qc}->{pbc_qc}->{NRF}
@@ -1238,4 +1253,28 @@ sub get_quality_metrics {
 	return {success => 1, message => $message, meta => \@meta};
     }
     return {success => 0, message => $message, meta => undef};
+}
+
+sub get_assembly_params {
+    # Get assembly specifications from URL params, %json_filter and %json_exclude.
+    # Returns a hash of arrays.
+    my ($params, $json_filter, $json_exclude) = @_;
+
+    my @assembly;
+    my @not_assembly;
+    if ($params =~ m/assembly=(\w+)\&*/) {
+        $assembly[0] = $1;
+    } elsif (exists($json_filter->{assembly})) {
+        for (my $i = 0; $i <= $#{$json_filter->{assembly}}; $i++) {
+            push @assembly, $json_filter->{assembly}[$i];
+	}
+    }
+    if (exists($json_exclude->{assembly})) {
+        for (my $i = 0; $i <= $#{$json_exclude->{assembly}}; $i++) {
+            push @not_assembly, $json_exclude->{assembly}[$i];
+	}
+    }
+    
+    return { assembly => \@assembly,
+	     not_assembly => \@not_assembly };
 }
