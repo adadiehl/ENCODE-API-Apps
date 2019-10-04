@@ -730,30 +730,24 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	}
 	
     } else { # if (!$download)
-	if ($quality_data) {
-	    my $meta = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech);
-            &print_array($meta, "\t", $DATA);
-            $n_results++;
-	} else {	
-	    # Prepare a row for the tabular data...
-	    my $files_str = join ",", &nopaths($row->{files});
-	    my $controls_str = join ",", &nopaths($row->{possible_controls});
-	    my $documents_str = join ",", &nopaths($row->{documents});
-	    
-	    my @meta = ($row->{accession}, $row->{dataset_type},
-			$row->{biosample_term_name}, $row->{biosample_type},
-			$row->{assay_term_name}, &nopath($row->{target}),
-			$row->{status}, $row->{date_released},
-			&nopath($row->{lab}), $files_str, $controls_str,
-			$documents_str);
-	    for (my $i = 0; $i <= $#meta; $i++) {
-		if (!defined($meta[$i])) {
-		    $meta[$i] = '.';
-		}
+	# Prepare a row for the tabular data...
+	my $files_str = join ",", &nopaths($row->{files});
+	my $controls_str = join ",", &nopaths($row->{possible_controls});
+	my $documents_str = join ",", &nopaths($row->{documents});
+	
+	my @meta = ($row->{accession}, $row->{dataset_type},
+		    $row->{biosample_term_name}, $row->{biosample_type},
+		    $row->{assay_term_name}, &nopath($row->{target}),
+		    $row->{status}, $row->{date_released},
+		    &nopath($row->{lab}), $files_str, $controls_str,
+		    $documents_str);
+	for (my $i = 0; $i <= $#meta; $i++) {
+	    if (!defined($meta[$i])) {
+		$meta[$i] = '.';
 	    }
-	    print_array(\@meta, "\t", $DATA);
-	    $n_results++
 	}
+	print_array(\@meta, "\t", $DATA);
+	$n_results++
     }
 }
 
