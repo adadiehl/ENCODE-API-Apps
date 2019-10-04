@@ -80,6 +80,15 @@ OPTIONS:
     matching the given criteria. Compatible with the same options as
     --download.
 
+--quality-data
+    Compile a table of quality metrics for experiments matching the query,
+    to include read count, % mapped reads, % duplication, NSC, RSC, PBC,
+    and NRF. See definitions of these metrics here:
+    https://genome.ucsc.edu/ENCODE/qualityMetrics.html#definitions
+    and in the ENCODE ChIP-seq guidelines:
+    Landt, S. G., et al. (2012). ChIP-seq guidelines and practices of the
+    ENCODE and modENCODE consortia. Genome Res, 22(9), 1813–1831.
+
 --output-type <type_1,...,type_n>
     Used with --download, limits results to files of given type(s).
     Multiple types may be supplied as a comma-separated list. File types are
@@ -254,6 +263,7 @@ my $params = $ARGV[1];
 my $help = 0;
 my $download = 0;
 my $file_list = 0;
+my $quality_data = 0;
 my $output_type_str;
 my $file_format_str;
 my $file_format_type_str;
@@ -277,6 +287,7 @@ GetOptions (
     "help" => \$help,
     "download" => \$download,
     "file-list" => \$file_list,
+    "quality-data" => \$quality_data,
     "output-type=s" => \$output_type_str,
     "file-format=s" => \$file_format_str,
     "file-format-type=s" => \$file_format_type_str,
@@ -303,7 +314,7 @@ if ($help || $#ARGV+1 < 2) {
 }
 
 # Check for other options and do some sanity checks...
-if (defined($output_type_str) && !($download || $file_list) ) {
+if (defined($output_type_str) && !($download || $file_list || $quality_data) ) {
     die "\n--output-type only works with --download or --file-list. Try --help.\n";
 }
 #if (defined($file_format_type_str) && !defined($file_format_str)) {
@@ -327,11 +338,17 @@ if ($use_wget) {
 	die "Cannot find wget on your system. Please try again without --use-wget.\n";
     }
 }
-if (defined($filter_json_str) && !($download || $file_list)) {
+if (defined($filter_json_str) && !($download || $file_list) && !$quality_data) {
     print STDERR "\nWarning: --filter-json has no effect without --download or --file-list.\n";
 }
-if (defined($excl_json_str) && !($download || $file_list)) {
+if (defined($filter_json_str) && !($download || $file_list) && $quality_data) {
+    print STDERR "\nWarning: --filter-json invoked with --quality-data. File-level filtering will be used but no files will be downloaded. Experiment-level quality metrics for experiments with files matching criteria will be written to metadata.\n";
+}
+if (defined($excl_json_str) && !($download || $file_list) && !$quality_data) {
     print STDERR "\nWarning: --exclude-json has no effect without --download or --file-list.\n";
+}
+if (defined($excl_json_str) && !($download || $file_list) && $quality_data) {
+    print STDERR "\nWarning: --exclude-json invoked with --quality-data. File-level filtering will be used but no files will be downloaded. Experiment-level quality metrics for experiments with files matching criteria will be written to metadata.\n";
 }
 
 
@@ -459,14 +476,19 @@ if ( ${$json}{error_status} ) {
 # Prepare the metadata file header
 my @header;
 if ($download || $file_list) {
-    # File-centric header                                                                                                                                          
+    # File-centric header
     @header = ("file", "accession", "output_type", "biological_replicate",
                "technical_replicate", "assembly", "status", "dataset_type", "biosample_term_name",
                "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
                "date_released", "lab", "parent accession", "possible_controls",
                "documents", "href");
+} elsif ($quality_data) {
+    @header = ("accession", "dataset_type", "biosample_term_name",
+               "biosample_type", "assay_term_name", "target", "status",
+               "date_released", "lab", "files", "reads", "pctMapped",
+	       "pctDup", "NSC", "RSC", "PBC1", "PBC2", "NRF");
 } else {
-    # Experiment-centric header                                                                                                                                    
+    # Experiment-centric header
     @header = ("accession", "dataset_type", "biosample_term_name",
                "biosample_type", "assay_term_name", "target", "status",
                "date_released", "lab", "files", "possible_controls",
@@ -513,35 +535,27 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    next;
 	}
     }
-
-    # Each row of the array contains a hash reference to a search result.
-    # Make a copy of the hash for convenience.
-    my %result = %{$row};
-
-    if ($download || $file_list) {
+ 
+    if ($download || $file_list || $quality_data) {
 	# If we are downloading data files, use a file-centric process and
-	# metadata format.
+	# metadata format. Quality data is the outlier here because it will
+	# be compiled on an experiment-wise basis, but we still want to apply
+	# the same file-wise filtering process.
 	my $rec = $ds;
 	if ($n_rand > 0) {
 	    $rec = $i;
 	}
 	print STDERR "Processing files for result $rec...\n";
 	$ds++;
-	
-	my @files = @{$result{files}};
+
+	my $has_rec = 0; # Does experiment have a useable record?
+	my @files = @{$row->{files}};
 	foreach my $file (@files) {
-	    
-	    # Because metadata for individual files is stored in separate
-	    # records, retrieve these as separate queries against the
-	    # database.
-	    my $url = 'http://www.encodeproject.org/' . $file . '?format=json';
-	    #print STDERR "$url\n";
-	    
-	    # Get the JSON from the url
-	    my $file_json = &get_json($mech, $url);
+	    # Get json record for the file from ENCODE
+	    my $file_json = get_file_json($file, $mech);
 	    if (defined($file_json->{error_status}) &&
 		$file_json->{error_status} == 1) {
-		print STDERR "JSON retrieval error for $url: $file_json->{notification}.\n";
+		print STDERR "JSON retrieval error for $file: $file_json->{notification}.\n";
 		next;
 	    }
 	    
@@ -559,7 +573,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			last;
 		    } else {
 			if ($debug) {
-			    print STDERR "output type ${$file_json}{output_type} does not match\n";
+			    print STDERR "Output type ${$file_json}{output_type} does not match specified type (", $output_types[$i], ")\n";
 			}
 			$use_rec = 0;
 		    }
@@ -611,16 +625,20 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    if (%json_exclude && $use_rec) {
 		$use_rec = &exclude_json(\%json_exclude, $file_json, $match_all_excl);
             }
-	    
-	    if ($use_rec) {
+
+	    if ($use_rec && !$has_rec) {
+		$has_rec = 1;
+	    }
+
+	    if ($use_rec && !$quality_data) {
 		# Store a pointer to the file_json in our array
 		if ($download) {
 		    push @downloads, $file_json;
 		}
 		
 		# Build a row for the metadata table
-		my $controls_str = join ",", &nopaths($result{possible_controls});
-		my $documents_str = join ",", &nopaths($result{documents});
+		my $controls_str = join ",", &nopaths($row->{possible_controls});
+		my $documents_str = join ",", &nopaths($row->{documents});
 
 		my $biorep = $file_json->{replicate}->{biological_replicate_number};
 		if (!defined($biorep)) {
@@ -640,39 +658,38 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		}
 		my $bs_acc = $pd_json->{replicates}->[$idx]->{library}->{biosample}->{donor}->{accession};
 
-		my $biosample_ontology = get_biosample_ontology($mech, $result{biosample_ontology});
-		my @row = (&get_filename($file_json),
-			   $file_json->{accession},
-			   $file_json->{output_type},
-			   $biorep,
-			   $trep,
-			   $file_json->{assembly},
-			   $file_json->{status},
-			   $result{dataset_type},
-			   $biosample_ontology->{term_name},
-			   $biosample_ontology->{classification},
-			   $bs_acc,
-			   $result{assay_term_name},
-			   &nopath($result{target}),
-			   $result{status},
-			   $result{date_released}, 
-			   &nopath($result{lab}),
-			   $result{accession}, 
-			   $controls_str,
-			   $documents_str,
-			   "https://www.encodeproject.org" . $file_json->{href},
+		my $biosample_ontology = get_biosample_ontology($mech, $row->{biosample_ontology});
+		my @meta = (&get_filename($file_json),
+			    $file_json->{accession},
+			    $file_json->{output_type},
+			    $biorep,
+			    $trep,
+			    $file_json->{assembly},
+			    $file_json->{status},
+			    $row->{dataset_type},
+			    $biosample_ontology->{term_name},
+			    $biosample_ontology->{classification},
+			    $bs_acc,
+			    $row->{assay_term_name},
+			    &nopath($row->{target}),
+			    $row->{status},
+			    $row->{date_released}, 
+			    &nopath($row->{lab}),
+			    $row->{accession}, 
+			    $controls_str,
+			    $documents_str,
+			    "https://www.encodeproject.org" . $file_json->{href},
 		    );
-
+		
 		# Correct any undefined metadata values
-		for (my $i = 0; $i <= $#row; $i++) {
-		    if (!defined($row[$i])) {
-			$row[$i] = '.';
+		for (my $i = 0; $i <= $#meta; $i++) {
+		    if (!defined($meta[$i])) {
+			$meta[$i] = '.';
 		    }
 		}
 
 		# Print a metadata row
-		&print_array(\@row, "\t", $DATA);
-
+		&print_array(\@meta, "\t", $DATA);
 		$n_results++
 		
 	    } else {
@@ -680,27 +697,45 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		# hanging around for files we're not using.
 		undef($file_json);
 	    }
+
 	}
+	
+	if ($has_rec && $quality_data) {
+	    my $res = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech);
+	    #print STDERR "Line 699: success ", $res->{success}, ", meta ", $res->{meta},"\n";
+	    if (!$res->{success}) {
+		print STDERR "Metadata retrieval failed for $row->{accession}: $res->{message}\n";
+		next;
+	    }
+	    &print_array($res->{meta}, "\t", $DATA);
+	    $n_results++;
+	}	
 	
     } else { # if (!$download)
-	# Prepare a row for the tabular data...
-	my $files_str = join ",", &nopaths($result{files});
-	my $controls_str = join ",", &nopaths($result{possible_controls});
-	my $documents_str = join ",", &nopaths($result{documents});
-	
-	my @row = ($result{accession}, $result{dataset_type},
-		   $result{biosample_term_name}, $result{biosample_type},
-		   $result{assay_term_name}, &nopath($result{target}),
-		   $result{status}, $result{date_released},
-		   &nopath($result{lab}), $files_str, $controls_str,
-		   $documents_str);
-	for (my $i = 0; $i <= $#row; $i++) {
-	    if (!defined($row[$i])) {
-		$row[$i] = '.';
+	if ($quality_data) {
+	    my $meta = get_quality_metrics($row, $params, \%json_filter, \%json_exclude, $mech);
+            &print_array($meta, "\t", $DATA);
+            $n_results++;
+	} else {	
+	    # Prepare a row for the tabular data...
+	    my $files_str = join ",", &nopaths($row->{files});
+	    my $controls_str = join ",", &nopaths($row->{possible_controls});
+	    my $documents_str = join ",", &nopaths($row->{documents});
+	    
+	    my @meta = ($row->{accession}, $row->{dataset_type},
+			$row->{biosample_term_name}, $row->{biosample_type},
+			$row->{assay_term_name}, &nopath($row->{target}),
+			$row->{status}, $row->{date_released},
+			&nopath($row->{lab}), $files_str, $controls_str,
+			$documents_str);
+	    for (my $i = 0; $i <= $#meta; $i++) {
+		if (!defined($meta[$i])) {
+		    $meta[$i] = '.';
+		}
 	    }
+	    print_array(\@meta, "\t", $DATA);
+	    $n_results++
 	}
-	print_array(\@row, "\t", $DATA);
-	$n_results++
     }
 }
 
@@ -734,10 +769,11 @@ print STDERR "Done!\n";
 
 sub get_json {
     # Retrieve JSON data from a URL and return it as a data structure.
-    my $mech = $_[0];
-    my $url = $_[1];
+    my ($mech, $url, $max_tries) = @_;
 
-    my $max_tries = 10; # TO-DO: make this configurable
+    if (!defined($max_tries)) {
+	$max_tries = 10;
+    }
 
     my $status = eval {
 	$mech->get($url);
@@ -858,12 +894,50 @@ sub download_file {
 sub print_array {
     # A generic function to print an array to a file handle as a string with
     # the supplied delimiting.
-    my $array = $_[0];
-    my $delim = $_[1];
-    my $fh = $_[2];
+    my ($array, $delim, $fh, $term, $nd_char) = @_;
+    # input array, delimiter char, filehandle, terminator char, not-defined char                  
 
-    my $out_str = join $delim, @{$array};
-    print $fh "$out_str\n";
+    if (!defined($delim)) {
+        $delim = "\t";
+    }
+    if (!defined($term)) {
+        $term = "\n";
+    }
+
+    if (defined($fh)) {
+        select $fh;
+    } else {
+        select STDOUT;
+    }
+
+    my $i;
+    for ($i = 0; $i < $#{$array}; $i++) {
+        if (defined(${$array}[$i])) {
+            print "${$array}[$i]$delim";
+        } else {
+            if (defined($nd_char)) {
+                print "$nd_char$delim";
+            } else {
+                print STDERR "WARNING: Some fields in output array not defined with no default. Skipping!\n";
+                next;
+            }
+        }
+    }
+    if (defined(${$array}[$#{$array}])) {
+        print "${$array}[$#{$array}]$term";
+    } else {
+        if (defined($nd_char)) {
+            print "$nd_char$term";
+        } else {
+            print STDERR "WARNING: Some fields in output array not defined with no default. Skipping!\n";
+            print "$term";
+        }
+    }
+
+    if (defined($fh)) {
+        select STDOUT;
+    }
+    return 0;
 }
 
 sub nopaths {
@@ -1066,4 +1140,102 @@ sub filter_json_term {
 	}
     }
     return 0;
+}
+
+sub get_file_json {
+    # Retrieve json for a given file.
+    my ($file, $mech) = @_;
+    
+    my $url = 'http://www.encodeproject.org' . $file . '?format=json';
+    #print STDERR "$url\n";
+
+    # Get the JSON from the url
+    my $file_json = &get_json($mech, $url);
+    return ($file_json);
+}
+
+sub get_quality_metrics {
+    # Get quality metrics from an experiment
+    my ($row, $params, $json_filter, $json_exclude, $mech) = @_;
+
+    # We need to pick an assembly from which to retrieve quality scores.
+    # Check and see if one has been specified (or excluded) in params,
+    # json_filter, or json_exclude. If more than one assembly is included
+    # in the filters, just use the first one supplied (probably should have
+    # a better solution for this!).
+    my $assembly;
+    my $not_assembly;
+    if (exists($json_filter->{assembly})) {
+	$assembly = $json_filter->{assembly}[0];
+    } elsif ($params =~ m/assembly=(\w+)\&*/) {
+	$assembly = $1;
+    } elsif (exists($json_exclude->{assembly})) {
+        $not_assembly =	$json_exclude->{assembly}[0];
+    } else {
+	print STDERR "Warning: no assembly specified. Quality scores for the first alignment file encountered will be used.\n";
+    }
+
+    # Find the alignment file for the first/chosen assembly.
+    my $success = 0;
+    my $message = "No matching file";
+    foreach my $file (@{$row->{files}}) {
+	#print STDERR "Line 1176: ", $file, "\n";
+	# Get json record for the file from ENCODE
+	my $file_json = get_file_json($file, $mech);
+	if (defined($file_json->{error_status}) &&
+	    $file_json->{error_status} == 1) {
+	    print STDERR "JSON retrieval error for $file: $file_json->{notification}.\n";
+	    $message = "Max number of tries reached.";
+	    next;
+	}
+
+	# Check the file ouput_type -- we only want filtered alignments
+	if ($file_json->{output_type} =~ m/alignments/ &&
+	    $file_json->{output_type} !~ m/unfiltered/) {
+	    $message = "Success!";
+	} else {
+	    next;
+	}
+
+	# Check the assembly, if we have one
+	if (defined($assembly)) {
+	    if ($file_json->{assembly} ne $assembly) {
+		next;
+	    }
+	} elsif (defined($not_assembly)) {
+	    if ($file_json->{assembly} eq $not_assembly) {
+		next;
+            }
+	}
+
+	#print STDERR "Line 1201: ", $file_json->{accession}, "\n";
+	#print STDERR "Line 1202: ", $file_json->{notes}, "\n";
+	
+	# Get the quality metrics. These are all available in the "notes" field.
+	my $notes_json = decode_json($file_json->{notes});
+
+	my $files_str = join ",", &nopaths($row->{files});
+
+        my @meta = ($row->{accession}, $row->{dataset_type},
+		    $row->{biosample_term_name}, $row->{biosample_type},
+		    $row->{assay_term_name}, &nopath($row->{target}),
+		    $row->{status}, $row->{date_released},
+		    &nopath($row->{lab}),
+		    $notes_json->{qc}->{qc}->{in_total}[0], 
+		    $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0],
+		    $notes_json->{qc}->{qc_dup}->{percent_duplication},
+		    $notes_json->{qc}->{xcor_qc}->{phantomPeakCoef},
+		    $notes_json->{qc}->{xcor_qc}->{relPhantomPeakCoef},
+		    $notes_json->{qc}->{pbc_qc}->{PBC1},
+		    $notes_json->{qc}->{pbc_qc}->{PBC2},
+		    $notes_json->{qc}->{pbc_qc}->{NRF}
+	    );
+        for (my $i = 0; $i <= $#meta; $i++) {
+            if (!defined($meta[$i])) {
+                $meta[$i] = '.';
+            }
+        }
+	return {success => 1, message => $message, meta => \@meta};
+    }
+    return {success => 0, message => $message, meta => undef};
 }
