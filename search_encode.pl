@@ -260,7 +260,7 @@ my $file_format_type_str;
 my $download_path;
 my $out_root;
 my $save_json = 0;
-my $rec_type = "experiment";
+my $rec_type = "Experiment";
 my $no_header = 0;
 my $count_only = 0;
 my $by_biosample = 0;
