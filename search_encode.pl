@@ -283,6 +283,7 @@ my $match_all = 0;
 my $match_all_excl = 0;
 my $debug = 0;
 my $n_rand = 0;
+my $is_reads = 0;
 
 GetOptions (
     "help" => \$help,
@@ -327,8 +328,8 @@ if (defined($download_path) && !$download) {
 if ($download && !defined($output_type_str)) {
     print STDERR "\nWarning: --download will retrieve all accepted files associated with search results. If this is not what you want, use --file-type to specify which type(s) you would like to download. See --help.\n\n";
 }
-if ($rec_type ne "experiment") {
-    print STDERR "\nWarning: --rec_type other than \"experiment\" has not been well tested and may produces unpredictable results!\n";
+if ($rec_type ne "Experiment") {
+    print STDERR "\nWarning: --rec_type other than \"Experiment\" has not been well tested and may produces unpredictable results!\n";
 }
 if ($count_only && $download) {
     print STDERR "\nWarning: --count-only overrides --download. No data will be retrieved! (see --help if this is not what you want)\n";
@@ -364,7 +365,13 @@ if (defined($download_path)) {
 my @output_types;
 if (defined($output_type_str)) {
     @output_types = split /,/, $output_type_str;
+    foreach my $type (@output_types) {
+	if ($type eq "reads") {
+	    $is_reads = 1;
+	}
+    }
 }
+
 
 my @file_formats;
 if (defined($file_format_str)) {
@@ -486,6 +493,9 @@ if ($download || $file_list) {
                "biosample_type", "biosample_donor_accession", "assay_term_name", "target", "status",
                "date_released", "lab", "parent accession", "possible_controls",
                "documents", "href");
+    if ($is_reads) {
+	push @header, "run_type", "paired_end", "paired_with", "controlled_by";
+    }
 } elsif ($quality_data) {
     @header = ("experiment", "biosample_term_name",
                "biosample_type", "assay_term_name", "target", "file", "status",
@@ -569,7 +579,8 @@ foreach my $row (@{${$json}{'@graph'}}) {
 
 	    # If we are retrieving quality metrics, check to see if we have
 	    # an alignment file that matches our assembly criteria.
-	     if ($file_json->{output_type} =~ m/alignments/ &&
+	     if ($quality_data &&
+		 $file_json->{output_type} =~ m/alignments/ &&
 		 $file_json->{output_type} !~ m/unfiltered/) {
 		 push @quality_recs, {exp_json => $row,
 				      file_json => $file_json};
@@ -577,7 +588,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    
 	    # Examine the JSON to see if the file matches our criteria
 	    my $use_rec = 1; # Download all files by default
-		
+
 	    # If output_type does not match, reject the file
 	    if (@output_types) {
 		for (my $i = 0; $i <= $#output_types ; $i++) {
@@ -696,6 +707,17 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			    $documents_str,
 			    "https://www.encodeproject.org" . $file_json->{href},
 		    );
+		if ($is_reads) {
+		    # Add in fastq read-specific values.
+		    my $control_str = ".";
+		    if (exists($file_json->{controlled_by})) {
+			join ",", @{$file_json->{controlled_by}};
+                    }
+		    push @meta, $file_json->{run_type},
+			$file_json->{paired_end},
+			$file_json->{paired_with},
+			$control_str;
+		}
 		
 		# Correct any undefined metadata values
 		for (my $i = 0; $i <= $#meta; $i++) {
