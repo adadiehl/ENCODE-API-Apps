@@ -711,11 +711,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		    # Add in fastq read-specific values.
 		    my $control_str = ".";
 		    if (exists($file_json->{controlled_by})) {
-			join ",", @{$file_json->{controlled_by}};
+			$control_str = join ",", nopaths($file_json->{controlled_by});
                     }
 		    push @meta, $file_json->{run_type},
 			$file_json->{paired_end},
-			$file_json->{paired_with},
+			nopath($file_json->{paired_with}),
 			$control_str;
 		}
 		
@@ -976,16 +976,12 @@ sub print_array {
 sub nopaths {
     # A generic function to strip the path from file or directory names stored
     # in an array.
-    my @array = @{$_[0]};
+    my ($arr) = @_;
 
     my @out;
-    if ($#array < 0) {
-	push @out, ".";
-    } else {
-	foreach my $str (@array) {
-	    my $s = &nopath($str);
-	    push @out, $s;
-	}
+    for (my $i = 0; $i <= $#{$arr}; $i++) {
+	my $s = &nopath($arr->[$i]);
+	push @out, $s;
     }
     return @out;
 }
