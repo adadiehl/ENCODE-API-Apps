@@ -90,6 +90,10 @@ OPTIONS:
     Landt, S. G., et al. (2012). ChIP-seq guidelines and practices of the
     ENCODE and modENCODE consortia. Genome Res, 22(9), 1813–1831.
 
+--reads-and-controls
+    Download sequencing reads and control reads for matching experiments.
+    Forces --download and --output-type <reads>.
+
 --output-type <type_1,...,type_n>
     Used with --download, limits results to files of given type(s).
     Multiple types may be supplied as a comma-separated list. File types are
@@ -284,12 +288,14 @@ my $match_all_excl = 0;
 my $debug = 0;
 my $n_rand = 0;
 my $is_reads = 0;
+my $reads_and_controls = 0;
 
 GetOptions (
     "help" => \$help,
     "download" => \$download,
     "file-list" => \$file_list,
     "quality-data" => \$quality_data,
+    "reads-and-controls" => \$reads_and_controls,
     "output-type=s" => \$output_type_str,
     "file-format=s" => \$file_format_str,
     "file-format-type=s" => \$file_format_type_str,
@@ -353,6 +359,12 @@ if (defined($excl_json_str) && !($download || $file_list) && $quality_data) {
     print STDERR "\nWarning: --exclude-json invoked with --quality-data. File-level filtering will be used but no files will be downloaded. Experiment-level quality metrics for experiments with files matching criteria will be written to metadata.\n";
 }
 
+my %controls;
+if ($reads_and_controls) {
+    $is_reads = 1;
+    $output_type_str = "reads";
+    $download = 1;
+}
 
 # Check the download path for a trailing slash and add one if needed
 if (defined($download_path)) {
@@ -591,18 +603,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 
 	    # If output_type does not match, reject the file
 	    if (@output_types) {
+		$use_rec = 0;
 		for (my $i = 0; $i <= $#output_types ; $i++) {
-		    if (!exists(${$file_json}{output_type})) {
-			$use_rec = 0;
-			last;
-		    } elsif (${$file_json}{output_type} eq $output_types[$i]) {
+		    if (screen_output_type($file_json, $output_types[$i])) {
 			$use_rec = 1;
 			last;
-		    } else {
-			if ($debug) {
-			    print STDERR "Output type ${$file_json}{output_type} does not match specified type (", $output_types[$i], ")\n";
-			}
-			$use_rec = 0;
 		    }
 		}
 	    }
@@ -676,7 +681,7 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		    $trep = $file_json->{technical_replicates}->[0];
 		}
 
-		my $url = 'http://www.encodeproject.org' . $file_json->{dataset} . '?format=JSON';
+		my $url = 'http://www.encodeproject.org' . $file_json->{dataset} . '?format=json';
 		#print STDERR "$url\n";
 		my $pd_json = get_json($mech, $url);
 		my $idx = 0;
@@ -712,7 +717,21 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		    my $control_str = ".";
 		    if (exists($file_json->{controlled_by})) {
 			$control_str = join ",", nopaths($file_json->{controlled_by});
-                    }
+			if ($reads_and_controls) {
+			    my $new_ctrls = parse_controls(\%controls,
+							   $file_json->{controlled_by});
+			    push @files, @{$new_ctrls};
+			}
+                    } else {
+			if ($reads_and_controls && 
+			    !exists($controls{"/files/" . $file_json->{accession}})) {
+			    my $new_ctrls = find_controls($row->{possible_controls});
+			    push @files, @{parse_controls(\%controls, $new_ctrls)};
+			    # We need to prevent listing a file as its own control.
+			    $control_str = join ",", nopaths($new_ctrls);
+			}
+		    }
+		    
 		    push @meta, $file_json->{run_type},
 			$file_json->{paired_end},
 			nopath($file_json->{paired_with}),
@@ -782,16 +801,16 @@ print STDERR "Wrote $n_results rows of metadata to \"$outfile\"....\n";
 # Stage 3: Download data. Optionally save the file json.
 
 # Download the files
-if ($download) {
+if ($download && !$file_list) {
     print STDERR "Downloading $n_results files from ${$json}{total} records...\n";
-}
-foreach my $file_json (@downloads) {
-    &download_file($mech, $file_json, $download_path, $out_root, $check_exists, $use_wget);
-    if ($save_json) {
-	&save_json($file_json, $download_path, $out_root);
+    foreach my $file_json (@downloads) {
+	&download_file($mech, $file_json, $download_path, $out_root, $check_exists, $use_wget);
+	if ($save_json) {
+	    &save_json($file_json, $download_path, $out_root);
+	}
+	#    $mech_size = total_size($mech);
+	#    print STDERR "Size of $mech: $mech_size\n";
     }
-#    $mech_size = total_size($mech);
-#    print STDERR "Size of $mech: $mech_size\n";
 }
 
 close $DATA;
@@ -1286,4 +1305,48 @@ sub get_assembly_params {
     
     return { assembly => \@assembly,
 	     not_assembly => \@not_assembly };
+}
+
+sub parse_controls {
+    my ($controls_found, $controls_this) = @_;
+    my @ret;
+    foreach my $control (@{$controls_this}) {
+	if (!exists($controls_found->{$control})) {
+	    $controls_found->{$control} = 1;
+	    push @ret, $control;
+	}
+    }
+    return \@ret;
+}
+
+sub find_controls {
+    # Find control read files when they are not explicitly given in read file json
+    my ($possible_controls) = @_;
+
+    my @read_files;
+    foreach my $pos_ctrl (@{$possible_controls}) {
+	# Possible Controls does not always include the /experiment/ prefix.
+	my $json = get_json($mech, 'http://www.encodeproject.org' . $pos_ctrl . '?format=json');
+	foreach my $file_json (@{$json->{files}}) {
+	    if (screen_output_type($file_json, "reads")) {
+		push @read_files, '/files/' . $file_json->{accession};
+	    }
+	}
+    }
+    return \@read_files;
+}
+
+sub screen_output_type {
+    # See if the output_type of the given record is what we want
+    my ($file_json, $output_type) = @_;
+    if (!exists($file_json->{output_type})) {
+	return 0;
+    } elsif ($file_json->{output_type} eq $output_type) {
+	return 1;
+    } else {
+	if ($debug) {
+	    print STDERR "Output type ${$file_json}{output_type} does not match specified type (", $output_type, ")\n";
+	}
+	return 0;
+    }
 }
