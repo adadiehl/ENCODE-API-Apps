@@ -822,40 +822,26 @@ print STDERR "Done!\n";
 
 sub get_json {
     # Retrieve JSON data from a URL and return it as a data structure.
-    my ($mech, $url, $max_tries) = @_;
+    my ($mech, $url, $max_tries, $try) = @_;
     if (!defined($max_tries)) {
-	$max_tries = 10;
+        $max_tries = 10;
+    }
+    if (!defined($try)) {
+        $try = 1;
     }
 
-    my $status = eval {
-	$mech->get($url);
-	1
-    };
-
-    my $content;
-    if (!$status) {
-	# For some reason, the portal sometimes returns an error when there
-	# are no results. In these cases, use a dummy json to notify the user.
-	return decode_json('{ "notification": "ENCODE Portal returned error status: no results or bad request. Please check your query for errors!", "total": 0, "error_status": 1 }');
-    } else {	
-	$content = $mech->content;
-    }
+    $mech->get($url);
+    print STDERR $mech->success(), "\n";
 
     my $json;
-    eval { $json = decode_json($content); };
-    
-    # Retry if there is an error.
-    my $tries = 2;
-    while ($@ && $tries <= $max_tries) {
-	if ($debug) {
-	    print STDERR "Retrying json retrieval: attempt $tries of $max_tries...\n";
-	}
-	$tries++;
-	$content = $mech->content;
-	eval { $json = decode_json($content); };
-    }
-    if ($@) {
-	return decode_json('{ "notification": "Max tries reached. Aborting.", "total": 0, "error_status": 1 }');
+    if ($mech->success()) {
+        $json = decode_json($mech->content);
+    } else {
+        if ($try == $max_tries) {
+            $json = decode_json('{ "notification": "Max tries reached. Aborting. This could be a problem with the ENCODE Portal, an empty result set, or a problem with your query. Please check your query for errors!", "total": 0, "error_status": 1 }');
+        } else {
+	    $json = get_json($mech, $url, $max_tries, ++$try);
+        }
     }
     return $json;
 }
