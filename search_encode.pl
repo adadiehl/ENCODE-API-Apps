@@ -1316,7 +1316,7 @@ sub find_controls {
     my @read_files;
     foreach my $pos_ctrl (@{$possible_controls}) {
 	# It seems Possible Controls does not always include the /experiment/ prefix.
-	if ($pos_ctrl =! m/^\/experiments\//) {
+	if ($pos_ctrl !~ m/^\/experiments\//) {
 	    $pos_ctrl = '/experiments/' . $pos_ctrl;
 	}
 	my $json = get_json($mech, 'http://www.encodeproject.org' . $pos_ctrl . '?format=json');
