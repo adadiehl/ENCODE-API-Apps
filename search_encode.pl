@@ -831,7 +831,6 @@ sub get_json {
     }
 
     $mech->get($url);
-    print STDERR $mech->success(), "\n";
 
     my $json;
     if ($mech->success()) {
@@ -1297,6 +1296,11 @@ sub parse_controls {
     my ($controls_found, $controls_this) = @_;
     my @ret;
     foreach my $control (@{$controls_this}) {
+	# ENCODE is inconsistent in whether a trailing slash is
+	# used in strings for controls and read files. Therefore,
+	# we need the following hack to ensure nothing has a
+	# trailing slash.
+	$control =~ s/\/$//;
 	if (!exists($controls_found->{$control})) {
 	    $controls_found->{$control} = 1;
 	    push @ret, $control;
@@ -1311,7 +1315,10 @@ sub find_controls {
 
     my @read_files;
     foreach my $pos_ctrl (@{$possible_controls}) {
-	# Possible Controls does not always include the /experiment/ prefix.
+	# It seems Possible Controls does not always include the /experiment/ prefix.
+	if ($pos_ctrl =! m/^\/experiments\//) {
+	    $pos_ctrl = '/experiments/' . $pos_ctrl;
+	}
 	my $json = get_json($mech, 'http://www.encodeproject.org' . $pos_ctrl . '?format=json');
 	foreach my $file_json (@{$json->{files}}) {
 	    if (screen_output_type($file_json, "reads")) {
