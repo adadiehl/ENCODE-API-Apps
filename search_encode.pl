@@ -906,7 +906,8 @@ sub download_file {
 
     if ($use_wget) {
 	print STDERR "Retrieving file with wget...\n";
-	`wget $url`;
+	# Retrieve with -q (quiet), -nc (no clobber), -c (continue download of partial files)
+	`wget -q -nc -c $url`;
 	if ($file_parts[$#file_parts] ne $outfile) {
 	    `mv $file_parts[$#file_parts] $outfile`;
 	}
