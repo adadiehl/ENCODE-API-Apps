@@ -591,11 +591,11 @@ foreach my $row (@{${$json}{'@graph'}}) {
 
 	    # If we are retrieving quality metrics, check to see if we have
 	    # an alignment file that matches our assembly criteria.
-	     if ($quality_data &&
-		 $file_json->{output_type} =~ m/alignments/ &&
-		 $file_json->{output_type} !~ m/unfiltered/) {
-		 push @quality_recs, {exp_json => $row,
-				      file_json => $file_json};
+	    if ($quality_data &&
+		$file_json->{output_type} =~ m/alignments/ &&
+		$file_json->{output_type} !~ m/unfiltered/) {
+		push @quality_recs, {exp_json => $row,
+				     file_json => $file_json};
 	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
@@ -1197,10 +1197,15 @@ sub get_quality_metrics {
     foreach my $rec (@{$quality_recs}) {
 	my $row = $rec->{exp_json};
 	my $file_json = $rec->{file_json};
+	#print STDERR $file_json->{accession}, "\n";
+
+	if (!exists($file_json->{notes})) {
+	    next;
+	}
 	
 	# Check the assembly
 	my $use_rec = 0;
-	if (defined($assemblies->{assembly})) {	    
+	if ($#{$assemblies->{assembly}} > 0) {	    
 	    for (my $i = 0; $i <= $#{$assemblies->{assembly}}; $i++) {
 		if ($file_json->{assembly} eq $assemblies->{assembly}->[$i]) {
 		    $use_rec = 1;
@@ -1211,7 +1216,7 @@ sub get_quality_metrics {
 		next;
 	    }
 	}
-	if (defined($assemblies->{not_assembly})) {
+	if ($#{$assemblies->{not_assembly}} > 0) {
 	    for	(my $i = 0; $i <= $#{$assemblies->{not_assembly}}; $i++) {
 		if ($file_json->{assembly} eq $assemblies->{not_assembly}->[$i]) {
 		    $use_rec = 0;
@@ -1237,6 +1242,13 @@ sub get_quality_metrics {
 	    $biosample_ontology->{term_name} = $biosample_ontology->{classification} = ".";
 	}
 
+	my $pct_mapped = 0;
+	if (exists($notes_json->{qc}->{qc})) {
+	    $pct_mapped = $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0]
+	} else {
+	    $pct_mapped = $notes_json->{qc}->{mapped}[0] / $notes_json->{qc}->{in_total}[0];
+	}
+	
         my @meta = ($row->{accession},
 		    $biosample_ontology->{term_name},
 		    $biosample_ontology->{classification},
@@ -1247,7 +1259,7 @@ sub get_quality_metrics {
 		    $row->{date_released},
 		    &nopath($row->{lab}),
 		    $notes_json->{qc}->{qc}->{in_total}[0], 
-		    $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0],
+		    $pct_mapped,
 		    $notes_json->{qc}->{dup_qc}->{percent_duplication},
 		    $notes_json->{qc}->{xcor_qc}->{phantomPeakCoef},
 		    $notes_json->{qc}->{xcor_qc}->{relPhantomPeakCoef},
