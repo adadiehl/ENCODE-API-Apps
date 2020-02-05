@@ -26,6 +26,8 @@ use Encode qw(encode_utf8 decode_utf8);
 use Digest::MD5 qw(md5_hex);
 use URI::Escape;
 use File::Which;
+use overload ();
+use Scalar::Util ();
 #use Devel::Size qw(size total_size);
 
 my $usage =
@@ -93,6 +95,10 @@ OPTIONS:
 --reads-and-controls
     Download sequencing reads and control reads for matching experiments.
     Forces --download and --output-type <reads>.
+
+--biosample-data
+    Retrieve biosample descriptors, including ontology slims and reference
+    links.
 
 --output-type <type_1,...,type_n>
     Used with --download, limits results to files of given type(s).
@@ -289,6 +295,7 @@ my $debug = 0;
 my $n_rand = 0;
 my $is_reads = 0;
 my $reads_and_controls = 0;
+my $biosample_data = 0;
 
 GetOptions (
     "help" => \$help,
@@ -296,6 +303,7 @@ GetOptions (
     "file-list" => \$file_list,
     "quality-data" => \$quality_data,
     "reads-and-controls" => \$reads_and_controls,
+    "biosample-data" => \$biosample_data,
     "output-type=s" => \$output_type_str,
     "file-format=s" => \$file_format_str,
     "file-format-type=s" => \$file_format_type_str,
@@ -514,6 +522,11 @@ if ($download || $file_list) {
                "assembly", "date_released", "lab", "files", "reads", "pctMapped",
 	       "pctDup", "NSC", "RSC", "ccFragLen", "ccPhantomPeak",
 	       "ccMin", "PBC1", "PBC2", "NRF");
+} elsif ($biosample_data) {
+    @header = ("accession", "biosample_term_name", "biosample_type",
+	       "term_id", "synonyms", "organ_slims", "system_slims",
+	       "cell_slims", "developmental_slims", "summary", 
+	       "donor_accession", "gender", "age", "organism");
 } else {
     # Experiment-centric header
     @header = ("accession", "dataset_type", "biosample_term_name",
@@ -526,6 +539,8 @@ if ($download || $file_list) {
 my $DATA;
 my $outfile = build_write_path($download_path, $out_root, ["metadata"]);
 open $DATA, '>', $outfile;
+# Avoid wide character warnings
+binmode $DATA, ":utf8";
 
 # Print the metadata file header, if requested.
 unless ($no_header) {
@@ -739,14 +754,14 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		}
 		
 		# Correct any undefined metadata values
-		for (my $i = 0; $i <= $#meta; $i++) {
-		    if (!defined($meta[$i])) {
-			$meta[$i] = '.';
-		    }
-		}
+		#for (my $i = 0; $i <= $#meta; $i++) {
+		#    if (!defined($meta[$i])) {
+		#	$meta[$i] = '.';
+		#    }
+		#}
 
 		# Print a metadata row
-		&print_array(\@meta, "\t", $DATA);
+		&print_array(fix_undefined_meta_fields(\@meta), "\t", $DATA);
 		$n_results++
 		
 	    } else {
@@ -759,7 +774,6 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	
 	if ($has_rec && $quality_data) {
 	    my $res = get_quality_metrics(\@quality_recs, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
-	    #print STDERR "Line 699: success ", $res->{success}, ", meta ", $res->{meta},"\n";
 	    if (!$res->{success}) {
 		print STDERR "Metadata retrieval failed for $row->{accession}: $res->{message}\n";
 		next;
@@ -769,25 +783,66 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		$n_results++;
 	    }
 	}
-	
     } else { # if (!$download)
-	# Prepare a row for the tabular data...
-	my $files_str = join ",", &nopaths($row->{files});
-	my $controls_str = join ",", &nopaths($row->{possible_controls});
-	my $documents_str = join ",", &nopaths($row->{documents});
-	
-	my @meta = ($row->{accession}, $row->{dataset_type},
-		    $row->{biosample_term_name}, $row->{biosample_type},
-		    $row->{assay_term_name}, &nopath($row->{target}),
-		    $row->{status}, $row->{date_released},
-		    &nopath($row->{lab}), $files_str, $controls_str,
-		    $documents_str);
-	for (my $i = 0; $i <= $#meta; $i++) {
-	    if (!defined($meta[$i])) {
-		$meta[$i] = '.';
+
+	my @meta;
+	if ($biosample_data) {
+	    # Get biosample metadata.
+	    my $biosample_ontology = get_json_attr($mech, $row->{biosample_ontology});
+	    if ($biosample_ontology->{error_status}) {
+		print STDERR "Biosample ontology not retrieved: ", $biosample_ontology->{notification}, "\n";		
 	    }
+
+	    my $donor = {};
+	    my $replicate = get_json_attr($mech, $row->{replicates}->[0]);
+	    if ($replicate->{error_status}) {
+                print STDERR "Donor data not retrieved: ", $biosample_ontology->{notification}, "\n";
+            } else {
+		$donor = $replicate->{library}->{biosample}->{donor};
+	    }
+
+	    my $synonyms = join_array($biosample_ontology->{synonyms}, ",");
+	    my $organ_slims = join_array($biosample_ontology->{organ_slims}, ",");
+	    my $system_slims = join_array($biosample_ontology->{system_slims}, ",");
+	    my $cell_slims = join_array($biosample_ontology->{cell_slims}, ",");
+	    my $developmental_slims = join_array($biosample_ontology->{developmental_slims}, ",");
+	    
+	    @meta = ($row->{accession},
+		     $biosample_ontology->{term_name},
+		     $biosample_ontology->{classification},
+		     $biosample_ontology->{term_id},
+		     $synonyms,
+		     $organ_slims,
+		     $system_slims,
+		     $cell_slims,
+		     $developmental_slims,
+		     $row->{biosample_summary},
+		     $donor->{accession},
+		     $donor->{sex},
+		     $donor->{age},
+		     $donor->{organism}->{name}
+		);
+	} else {	
+	    # Prepare a row for the tabular data...
+	    my $files_str = join ",", &nopaths($row->{files});
+	    my $controls_str = join ",", &nopaths($row->{possible_controls});
+	    my $documents_str = join ",", &nopaths($row->{documents});
+	    
+	    @meta = ($row->{accession},
+		     $row->{dataset_type},
+		     $row->{biosample_term_name},
+		     $row->{biosample_type},
+		     $row->{assay_term_name},
+		     &nopath($row->{target}),
+		     $row->{status},
+		     $row->{date_released},
+		     &nopath($row->{lab}),
+		     $files_str,
+		     $controls_str,
+		     $documents_str
+		);
 	}
-	print_array(\@meta, "\t", $DATA);
+	&print_array(fix_undefined_meta_fields(\@meta), "\t", $DATA);
 	$n_results++
     }
 }
@@ -950,7 +1005,7 @@ sub print_array {
 
     my $i;
     for ($i = 0; $i < $#{$array}; $i++) {
-        if (defined(${$array}[$i])) {
+        if (defined(${$array}[$i])) {	    
             print "${$array}[$i]$delim";
         } else {
             if (defined($nd_char)) {
@@ -978,11 +1033,25 @@ sub print_array {
     return 0;
 }
 
+sub join_array {
+    # Generic function to join array members into a
+    # delimited string.
+    my ($array, $delim) = @_;
+    if (!defined($delim)) {
+	$delim = "\t";
+    }
+    if (!is_array_ref($array)) {
+	return undef;
+    }
+    my $ret = join $delim, @{$array};
+    return $ret;
+}
+
 sub nopaths {
     # A generic function to strip the path from file or directory names stored
     # in an array.
     my ($arr) = @_;
-
+    
     my @out;
     for (my $i = 0; $i <= $#{$arr}; $i++) {
 	my $s = &nopath($arr->[$i]);
@@ -1057,17 +1126,10 @@ sub get_biosample {
     return $biosample;
 }
 
-sub get_biosample_ontology {
+sub get_json_attr {
     my ($mech, $search_str) = @_;
     my $URL = 'http://www.encodeproject.org' . $search_str . '?format=json';
-
-    my $json = &get_json($mech, $URL);
-
-    if ( ${$json}{error_status} ) {
-        return undef;
-    }
-
-    return $json;
+    return &get_json($mech, $URL);
 }
 
 sub get_filename {
@@ -1204,44 +1266,18 @@ sub get_quality_metrics {
 	}
 	
 	# Check the assembly
-	my $use_rec = 0;
-	if ($#{$assemblies->{assembly}} > 0) {	    
-	    for (my $i = 0; $i <= $#{$assemblies->{assembly}}; $i++) {
-		if ($file_json->{assembly} eq $assemblies->{assembly}->[$i]) {
-		    $use_rec = 1;
-		    last;
-		}
-	    }
-	    if (!$use_rec) {
-		next;
-	    }
-	}
-	if ($#{$assemblies->{not_assembly}} > 0) {
-	    for	(my $i = 0; $i <= $#{$assemblies->{not_assembly}}; $i++) {
-		if ($file_json->{assembly} eq $assemblies->{not_assembly}->[$i]) {
-		    $use_rec = 0;
-		    last;
-		}
-	    }
-	    if (!$use_rec) {
-		next;
-            }
-	}
+	my $use_rec = check_assembly($file_json, $assemblies);
 
 	# Get the quality metrics. These are all available in the "notes" field.
 	my $notes_json = decode_json($file_json->{notes});
 
 	# Get biosample data (This is now a nested request in the experiment recs -- how annoying!)
-	my $biosample_ontology = get_json($mech,
-					  join("", "https://encodeproject.org", 
-					       $row->{biosample_ontology}, 
-					       "?format=json")
-	    );
+	my $biosample_ontology = get_json_attr($mech, $row->{biosample_ontology});
 	if ($biosample_ontology->{error_status}) {
 	    #print STDERR $biosample_ontology->{notification},"\n";
 	    $biosample_ontology->{term_name} = $biosample_ontology->{classification} = ".";
 	}
-
+	
 	my $pct_mapped = 0;
 	if (exists($notes_json->{qc}->{qc})) {
 	    $pct_mapped = $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0]
@@ -1270,12 +1306,12 @@ sub get_quality_metrics {
 		    $notes_json->{qc}->{pbc_qc}->{PBC2},
 		    $notes_json->{qc}->{pbc_qc}->{NRF}
 	    );
-        for (my $i = 0; $i <= $#meta; $i++) {
-            if (!defined($meta[$i])) {
-                $meta[$i] = '.';
-            }
-        }
-	push @res, \@meta;
+        #for (my $i = 0; $i <= $#meta; $i++) {
+        #    if (!defined($meta[$i])) {
+        #        $meta[$i] = '.';
+        #    }
+        #}
+	push @res, fix_undefined_meta_fields(\@meta);
 	$success = 1;
     }        
     return {success => $success, message => $message, res => \@res};
@@ -1355,4 +1391,65 @@ sub screen_output_type {
 	}
 	return 0;
     }
+}
+
+sub check_assembly {
+    # Check assembly of current record against those in
+    # assemblies specification.
+    my ($file_json, $assemblies) = @_;
+    my $use_rec = 0;
+    if ($#{$assemblies->{assembly}} > 0) {
+	for (my $i = 0; $i <= $#{$assemblies->{assembly}}; $i++) {
+	    if ($file_json->{assembly} eq $assemblies->{assembly}->[$i]) {
+		$use_rec = 1;
+		last;
+	    }
+	}
+	if (!$use_rec) {
+	    next;
+	}
+    }
+    if ($#{$assemblies->{not_assembly}} > 0) {
+	for (my $i = 0; $i <= $#{$assemblies->{not_assembly}}; $i++) {
+	    if ($file_json->{assembly} eq $assemblies->{not_assembly}->[$i]) {
+		$use_rec = 0;
+		last;
+	    }
+	}
+	if (!$use_rec) {
+	    next;
+	}
+    }
+    return $use_rec;
+}
+    
+sub fix_undefined_meta_fields {
+    # The name says it all.
+    my ($meta, $replacement) = @_;
+    if (!defined($replacement)) {
+	$replacement = '.';
+    }
+    my @new_meta = @{$meta};
+    for (my $i = 0; $i <= $#new_meta; $i++) {
+	if (!defined($new_meta[$i])) {
+	    $new_meta[$i] = $replacement;
+	} elsif ($new_meta[$i] eq "") {
+	    $new_meta[$i] = $replacement;
+	}
+    }
+    return \@new_meta;
+}
+
+sub is_array_ref {
+    my ($value) = @_;
+
+    # If this is an object,
+    # check if array-dereferencing was overloaded.
+    if (defined Scalar::Util::blessed $value) {
+	return defined $value->overload::Method('@{}');
+    }
+    
+    # If this is not an object,
+    # check whether this is a physical array ref.
+    return (Scalar::Util::reftype $value // '') eq 'ARRAY';
 }
