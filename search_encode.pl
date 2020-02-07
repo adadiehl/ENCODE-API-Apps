@@ -519,7 +519,7 @@ if ($download || $file_list) {
 } elsif ($quality_data) {
     @header = ("experiment", "biosample_term_name",
                "biosample_type", "assay_term_name", "target", "file", "status",
-               "assembly", "date_released", "lab", "files", "reads", "pctMapped",
+               "assembly", "date_released", "lab", "reads", "pctMapped",
 	       "pctDup", "NSC", "RSC", "ccFragLen", "ccPhantomPeak",
 	       "ccMin", "PBC1", "PBC2", "NRF");
 } elsif ($biosample_data) {
@@ -753,13 +753,6 @@ foreach my $row (@{${$json}{'@graph'}}) {
 			$control_str;
 		}
 		
-		# Correct any undefined metadata values
-		#for (my $i = 0; $i <= $#meta; $i++) {
-		#    if (!defined($meta[$i])) {
-		#	$meta[$i] = '.';
-		#    }
-		#}
-
 		# Print a metadata row
 		&print_array(fix_undefined_meta_fields(\@meta), "\t", $DATA);
 		$n_results++
@@ -1306,11 +1299,6 @@ sub get_quality_metrics {
 		    $notes_json->{qc}->{pbc_qc}->{PBC2},
 		    $notes_json->{qc}->{pbc_qc}->{NRF}
 	    );
-        #for (my $i = 0; $i <= $#meta; $i++) {
-        #    if (!defined($meta[$i])) {
-        #        $meta[$i] = '.';
-        #    }
-        #}
 	push @res, fix_undefined_meta_fields(\@meta);
 	$success = 1;
     }        
