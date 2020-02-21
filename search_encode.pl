@@ -521,7 +521,7 @@ if ($download || $file_list) {
                "biosample_type", "assay_term_name", "target", "file", "status",
                "assembly", "date_released", "lab", "reads", "pctMapped",
 	       "pctDup", "NSC", "RSC", "ccFragLen", "ccPhantomPeak",
-	       "ccMin", "PBC1", "PBC2", "NRF");
+	       "ccMin", "PBC1", "PBC2", "NRF", "FRiP", "N1");
 } elsif ($biosample_data) {
     @header = ("accession", "biosample_term_name", "biosample_type",
 	       "term_id", "synonyms", "organ_slims", "system_slims",
@@ -587,10 +587,10 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	if ($n_rand > 0) {
 	    $rec = $i;
 	}
-	print STDERR "Processing files for result $rec...\n";
+	print STDERR "Processing files for result $rec: ($row->{accession})...\n";
 	$ds++;
 
-	my @quality_recs; # Json objects from which to retrieve quality data
+	my $quality_recs = {}; # Json objects from which to retrieve quality data
 
 	my $has_rec = 0; # Does experiment have a useable record?
 	my @files = @{$row->{files}};
@@ -608,9 +608,42 @@ foreach my $row (@{${$json}{'@graph'}}) {
 	    # an alignment file that matches our assembly criteria.
 	    if ($quality_data &&
 		$file_json->{output_type} =~ m/alignments/ &&
-		$file_json->{output_type} !~ m/unfiltered/) {
-		push @quality_recs, {exp_json => $row,
-				     file_json => $file_json};
+		$file_json->{output_type} !~ m/unfiltered/  &&
+		check_assembly($file_json, $assemblies)
+		) {
+		foreach	my $rep	(@{$file_json->{biological_replicates}}) {
+		    if (exists($quality_recs->{$file_json->{assembly}}->{$rep})) {
+			$quality_recs->{$file_json->{assembly}}->{$rep}->{aln_json} = $file_json;
+		    } else {
+			$quality_recs->{$file_json->{assembly}}->{$rep} =
+			{exp_json => $row,
+			 aln_json => $file_json,
+			 peak_json => undef
+			};
+		    }
+		}
+	    }
+
+	    # For quality data, see if we have a bigBed peaks file.
+	    # bigBed is specified to ensure we only get one set of
+	    # results per replicate/assembly.
+	    if ($quality_data &&
+		$file_json->{output_type} =~ m/peaks/ &&
+		$file_json->{output_type} !~ m/background/ &&
+		$file_json->{file_type} =~ m/bigBed/ &&
+		check_assembly($file_json, $assemblies)
+		) {
+		foreach my $rep (@{$file_json->{biological_replicates}}) {
+		    if (exists($quality_recs->{$file_json->{assembly}}->{$rep})) {
+			$quality_recs->{$file_json->{assembly}}->{$rep}->{peak_json} = $file_json;
+		    } else {
+			$quality_recs->{$file_json->{assembly}}->{$rep} =
+			{exp_json => $row,
+			 aln_json => undef,
+			 peak_json => $file_json
+			};
+		    }
+		}
 	    }
 	    
 	    # Examine the JSON to see if the file matches our criteria
@@ -763,10 +796,10 @@ foreach my $row (@{${$json}{'@graph'}}) {
 		undef($file_json);
 	    }
 
-	}
+	}	
 	
 	if ($has_rec && $quality_data) {
-	    my $res = get_quality_metrics(\@quality_recs, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
+	    my $res = get_quality_metrics($quality_recs, $params, \%json_filter, \%json_exclude, $mech, $assemblies);
 	    if (!$res->{success}) {
 		print STDERR "Metadata retrieval failed for $row->{accession}: $res->{message}\n";
 		next;
@@ -1249,59 +1282,139 @@ sub get_quality_metrics {
     my $message = "No matching file(s)";
     my @res;
 
-    foreach my $rec (@{$quality_recs}) {
-	my $row = $rec->{exp_json};
-	my $file_json = $rec->{file_json};
-	#print STDERR $file_json->{accession}, "\n";
+    foreach my $assembly (keys(%{$quality_recs})) {
+	my $ass_rec = $quality_recs->{$assembly};
+	foreach my $replicate (keys(%{$ass_rec})) {
+	    my $rec = $ass_rec->{$replicate};
+	    my $row = $rec->{exp_json};
+	    my $aln_json = $rec->{aln_json};
+	    my $peak_json = $rec->{peak_json};
+	    #print STDERR $file_json->{accession}, "\n";
 
-	if (!exists($file_json->{notes})) {
-	    next;
-	}
-	
-	# Check the assembly
-	my $use_rec = check_assembly($file_json, $assemblies);
+	    # Get the quality metrics. These are typically all available in the "notes" field.
+	    my ($reads, $pctMapped, $pctDup, $NSC, $RSC, $ccFragLen, $ccPhantomPeak, $ccMin, $PBC1, $PBC2, $NRF);
+	    if (defined($aln_json->{notes})) {
+		my $aln_notes_json = decode_json($aln_json->{notes});
+                my $mapped;
+                if (defined($aln_notes_json->{qc}->{qc}->{mapped})) {
+                    $mapped = $aln_notes_json->{qc}->{qc}->{mapped}[0];
+                } elsif (defined($aln_notes_json->{qc}->{mapped})) {
+                    $mapped = $aln_notes_json->{qc}->{mapped}[0];
+                } elsif (defined($aln_notes_json->{mapped})) {
+                    $mapped = $aln_notes_json->{mapped}[0];
+                }
+                if (defined($aln_notes_json->{qc}->{qc}->{in_total})) {
+                    $reads = $aln_notes_json->{qc}->{qc}->{in_total}[0];
+                } elsif (defined($aln_notes_json->{qc}->{in_total})) {
+                    $reads = $aln_notes_json->{qc}->{in_total}[0];
+                } elsif (defined($aln_notes_json->{in_total})) {
+                    $reads = $aln_notes_json->{in_total}[0];
+                }
+                if (defined($mapped) && defined($reads)) {
+                    $pctMapped = $mapped / $reads;
+                }
 
-	# Get the quality metrics. These are all available in the "notes" field.
-	my $notes_json = decode_json($file_json->{notes});
-
-	# Get biosample data (This is now a nested request in the experiment recs -- how annoying!)
-	my $biosample_ontology = get_json_attr($mech, $row->{biosample_ontology});
-	if ($biosample_ontology->{error_status}) {
-	    #print STDERR $biosample_ontology->{notification},"\n";
-	    $biosample_ontology->{term_name} = $biosample_ontology->{classification} = ".";
+                if (defined($aln_notes_json->{qc}->{dup_qc}->{percent_duplication})) {
+                    $pctDup = $aln_notes_json->{qc}->{dup_qc}->{percent_duplication},
+                } elsif (defined($aln_notes_json->{dup_qc}->{percent_duplication})) {
+                    $pctDup = $aln_notes_json->{dup_qc}->{percent_duplication},
+                }
+                if (defined($aln_notes_json->{qc}->{xcor_qc})) {
+                    $NSC = $aln_notes_json->{qc}->{xcor_qc}->{phantomPeakCoef};
+                    $RSC = $aln_notes_json->{qc}->{xcor_qc}->{relPhantomPeakCoef};
+                    $ccFragLen = $aln_notes_json->{qc}->{xcor_qc}->{corr_estFragLen};
+                    $ccPhantomPeak = $aln_notes_json->{qc}->{xcor_qc}->{corr_phantomPeak};
+                    $ccMin = $aln_notes_json->{qc}->{xcor_qc}->{min_corr};
+                } elsif (defined($aln_notes_json->{xcor_qc})) {
+                    $NSC = $aln_notes_json->{xcor_qc}->{phantomPeakCoef};
+                    $RSC = $aln_notes_json->{xcor_qc}->{relPhantomPeakCoef};
+                    $ccFragLen = $aln_notes_json->{xcor_qc}->{corr_estFragLen};
+                    $ccPhantomPeak = $aln_notes_json->{xcor_qc}->{corr_phantomPeak};
+                    $ccMin = $aln_notes_json->{xcor_qc}->{min_corr};
+                }
+                if (defined($aln_notes_json->{qc}->{pbc_qc})) {
+                    $PBC1 = $aln_notes_json->{qc}->{pbc_qc}->{PBC1};
+                    $PBC2 = $aln_notes_json->{qc}->{pbc_qc}->{PBC2};
+                    $NRF = $aln_notes_json->{qc}->{pbc_qc}->{NRF};
+                } elsif (defined($aln_notes_json->{pbc_qc})) {
+                    $PBC1 = $aln_notes_json->{pbc_qc}->{PBC1};
+                    $PBC2 = $aln_notes_json->{pbc_qc}->{PBC2};
+                    $NRF = $aln_notes_json->{pbc_qc}->{NRF};
+                }
+	    } elsif (!exists($aln_json->{notes}) &&
+		$#{$aln_json->{quality_metrics}} >= 0) {
+		# Use quality_metrics object.
+		# This is often incomplete, but generally better than nothing.
+		foreach my $qc_json (@{$aln_json->{quality_metrics}}) {
+		    #my $qc_json = $aln_json->{quality_metrics}->[$i];
+		    # This is often incomplete, but generally better than nothing.
+		    if (defined($qc_json->{processing_stage}) &&
+			$qc_json->{processing_stage} eq "unfiltered") {
+			if (defined($qc_json->{mapped_pct})) {
+			    $pctMapped = $qc_json->{mapped_pct};
+			}
+			if (defined($qc_json->{total})) {
+                            $reads = $qc_json->{total};
+                        }
+			next;
+		    }
+		    if (defined($qc_json->{NSC})) {
+			$NSC = $qc_json->{NSC};
+		    }
+		    if (defined($qc_json->{RSC})) {
+			$RSC = $qc_json->{RSC};
+		    }
+		    if (defined($qc_json->{PBC1})) {
+			$PBC1 = $qc_json->{PBC1};
+		    }
+		    if (defined($qc_json->{PBC2})) {
+			$PBC2 =	$qc_json->{PBC2};
+		    }
+		    if (defined($qc_json->{NRF})) {
+			$NRF = $qc_json->{NRF};
+		    }
+		}
+	    }
+	    
+	    # Get notes from peak file.
+	    #my $peak_qc_json = decode_json($peak_json->{quality_metrics});
+	    
+	    # Get biosample data (This is now a nested request in the experiment recs -- how annoying!)
+	    my $biosample_ontology = get_json_attr($mech, $row->{biosample_ontology});
+	    if ($biosample_ontology->{error_status}) {
+		#print STDERR $biosample_ontology->{notification},"\n";
+		$biosample_ontology->{term_name} = $biosample_ontology->{classification} = ".";
+	    }
+	    	    
+	    my @meta = ($row->{accession},
+			$biosample_ontology->{term_name},
+			$biosample_ontology->{classification},
+			$row->{assay_term_name},
+			&nopath($row->{target}),
+			$aln_json->{accession},
+			$aln_json->{status},
+			$aln_json->{assembly},
+			$row->{date_released},
+			&nopath($row->{lab}),
+			$reads,
+			$pctMapped,
+			$pctDup,
+			$NSC,
+			$RSC,
+			$ccFragLen,
+			$ccPhantomPeak,
+			$ccMin,
+			$PBC1,
+			$PBC2,
+			$NRF,
+			$peak_json->{quality_metrics}->[0]->{F1},
+			$peak_json->{quality_metrics}->[0]->{N1}
+		);
+	    push @res, fix_undefined_meta_fields(\@meta);
+	    $message = "Success.";
+	    $success = 1;
 	}
-	
-	my $pct_mapped = 0;
-	if (exists($notes_json->{qc}->{qc})) {
-	    $pct_mapped = $notes_json->{qc}->{qc}->{mapped}[0] / $notes_json->{qc}->{qc}->{in_total}[0]
-	} else {
-	    $pct_mapped = $notes_json->{qc}->{mapped}[0] / $notes_json->{qc}->{in_total}[0];
-	}
-	
-        my @meta = ($row->{accession},
-		    $biosample_ontology->{term_name},
-		    $biosample_ontology->{classification},
-		    $row->{assay_term_name}, &nopath($row->{target}),
-		    $file_json->{accession},
-		    $file_json->{status},
-		    $file_json->{assembly},
-		    $row->{date_released},
-		    &nopath($row->{lab}),
-		    $notes_json->{qc}->{qc}->{in_total}[0], 
-		    $pct_mapped,
-		    $notes_json->{qc}->{dup_qc}->{percent_duplication},
-		    $notes_json->{qc}->{xcor_qc}->{phantomPeakCoef},
-		    $notes_json->{qc}->{xcor_qc}->{relPhantomPeakCoef},
-		    $notes_json->{qc}->{xcor_qc}->{corr_estFragLen},
-		    $notes_json->{qc}->{xcor_qc}->{corr_phantomPeak},
-		    $notes_json->{qc}->{xcor_qc}->{min_corr},
-		    $notes_json->{qc}->{pbc_qc}->{PBC1},
-		    $notes_json->{qc}->{pbc_qc}->{PBC2},
-		    $notes_json->{qc}->{pbc_qc}->{NRF}
-	    );
-	push @res, fix_undefined_meta_fields(\@meta);
-	$success = 1;
-    }        
+    }    
     return {success => $success, message => $message, res => \@res};
 }
 
@@ -1324,8 +1437,13 @@ sub get_assembly_params {
             push @not_assembly, $json_exclude->{assembly}[$i];
 	}
     }
+    my $check_assembly = 0;
+    if ($#assembly > 0 || $#not_assembly > 0) {
+	$check_assembly = 1;
+    }
     
-    return { assembly => \@assembly,
+    return { check_assembly => $check_assembly,
+	     assembly => \@assembly,
 	     not_assembly => \@not_assembly };
 }
 
@@ -1385,6 +1503,9 @@ sub check_assembly {
     # Check assembly of current record against those in
     # assemblies specification.
     my ($file_json, $assemblies) = @_;
+    if (!$assemblies->{check_assembly}) {
+	return 1;
+    }
     my $use_rec = 0;
     if ($#{$assemblies->{assembly}} > 0) {
 	for (my $i = 0; $i <= $#{$assemblies->{assembly}}; $i++) {
